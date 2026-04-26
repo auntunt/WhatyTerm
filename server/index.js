@@ -1293,34 +1293,42 @@ function getCurrentProvider(appType, workingDir = null, tmuxSessionName = null) 
           }));
         }
 
-        // 遍历供应商，找到 URL 精确匹配的
+        // 遍历供应商，找到 URL 匹配的（多个同 URL 时优先 URL+Key 精确匹配，其次 is_current）
+        const normalizedActual = actualApiUrl.replace(/\/+$/, '');
+        let urlMatches = [];
         for (const row of rows) {
           try {
             if (row.settings_config) {
               const config = JSON.parse(row.settings_config);
-              const providerUrl = config.env?.ANTHROPIC_BASE_URL || config.baseURL || '';
-
-              // 比较 URL（忽略末尾斜杠）
-              const normalizedActual = actualApiUrl.replace(/\/+$/, '');
-              const normalizedProvider = providerUrl.replace(/\/+$/, '');
-
-              // 精确匹配
-              if (normalizedActual === normalizedProvider) {
-                return resolve(buildResult({
-                  id: row.id,
-                  name: row.name || '未命名',
-                  url: actualApiUrl,
-                  apiKey: maskApiKey(actualApiKey),
-                  model: actualModel,
-                  exists: true,
-                  configSource,
-                  globalConfig: globalInfo
-                }));
+              const providerUrl = (config.env?.ANTHROPIC_BASE_URL || config.baseURL || '').replace(/\/+$/, '');
+              if (normalizedActual === providerUrl) {
+                const providerKey = config.env?.ANTHROPIC_AUTH_TOKEN || config.env?.ANTHROPIC_API_KEY || '';
+                urlMatches.push({ row, keyMatch: providerKey === actualApiKey });
               }
             }
-          } catch (parseError) {
-            // 忽略解析错误，继续下一个
+          } catch (parseError) {}
+        }
+
+        if (urlMatches.length > 0) {
+          // 优先 URL+Key 精确匹配
+          const exactMatch = urlMatches.find(m => m.keyMatch);
+          let bestRow;
+          if (exactMatch) {
+            bestRow = exactMatch.row;
+          } else {
+            const currentMatch = urlMatches.find(m => m.row.is_current);
+            bestRow = currentMatch ? currentMatch.row : urlMatches[0].row;
           }
+          return resolve(buildResult({
+            id: bestRow.id,
+            name: bestRow.name || '未命名',
+            url: actualApiUrl,
+            apiKey: maskApiKey(actualApiKey),
+            model: actualModel,
+            exists: true,
+            configSource,
+            globalConfig: globalInfo
+          }));
         }
 
         // 没有找到匹配的供应商
@@ -7125,22 +7133,84 @@ async function startServer() {
 
           let matchedRow = null;
           if (actualUrl) {
-            // 优先按 URL 精确匹配（settings.json 里的 URL 才是 Claude Code 真正在用的）
+            // 按 URL 匹配，多个同 URL 时优先 URL+Key 精确匹配，其次 is_current
             const allRows = db.prepare("SELECT * FROM providers WHERE app_type='claude'").all();
+            const normalizedUrl = actualUrl.replace(/\/+$/, '');
+            let urlMatches = [];
             for (const r of allRows) {
               try {
                 const sc = typeof r.settings_config === 'string' ? JSON.parse(r.settings_config) : (r.settings_config || {});
-                if (sc.env?.ANTHROPIC_BASE_URL === actualUrl) { matchedRow = r; break; }
+                const providerUrl = (sc.env?.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
+                if (providerUrl === normalizedUrl) {
+                  const providerKey = sc.env?.ANTHROPIC_AUTH_TOKEN || sc.env?.ANTHROPIC_API_KEY || '';
+                  urlMatches.push({ row: r, keyMatch: providerKey === actualKey });
+                }
               } catch {}
             }
+            if (urlMatches.length > 0) {
+              // 优先 URL+Key 精确匹配
+              const exactMatch = urlMatches.find(m => m.keyMatch);
+              if (exactMatch) {
+                matchedRow = exactMatch.row;
+              } else {
+                // 多个同 URL，优先 is_current
+                const currentMatch = urlMatches.find(m => m.row.is_current);
+                matchedRow = currentMatch ? currentMatch.row : urlMatches[0].row;
+              }
+            }
           }
-          // 如果 URL 为空（OAuth 官方账号），回退到 is_current=1
-          if (!matchedRow) {
-            matchedRow = db.prepare("SELECT * FROM providers WHERE app_type='claude' AND is_current=1 LIMIT 1").get();
+          // 如果 URL 为空，检查是否是 OAuth 官方账号
+          if (!matchedRow && !actualUrl) {
+            // 先检查 ~/.claude.json 是否有 oauthAccount
+            let hasOAuth = false;
+            let oauthEmail = '';
+            try {
+              const claudeJson = JSON.parse(readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8'));
+              hasOAuth = !!claudeJson.oauthAccount;
+              oauthEmail = claudeJson.oauthAccount?.emailAddress || '';
+            } catch {}
+
+            if (hasOAuth) {
+              // 是 OAuth，优先找 useOAuth=true 的 provider
+              const allRows = db.prepare("SELECT * FROM providers WHERE app_type='claude'").all();
+              matchedRow = allRows.find(r => {
+                try {
+                  const sc = typeof r.settings_config === 'string' ? JSON.parse(r.settings_config) : (r.settings_config || {});
+                  return !!sc.useOAuth && r.is_current;
+                } catch { return false; }
+              });
+              if (!matchedRow) {
+                matchedRow = allRows.find(r => {
+                  try {
+                    const sc = typeof r.settings_config === 'string' ? JSON.parse(r.settings_config) : (r.settings_config || {});
+                    return !!sc.useOAuth;
+                  } catch { return false; }
+                });
+              }
+              // 找不到 useOAuth provider，创建匿名 OAuth 显示
+              if (!matchedRow) {
+                currentCcProvider = {
+                  id: 'oauth-official',
+                  name: 'Claude Official',
+                  url: '',
+                  apiKey: '',
+                  model: '',
+                  apiType: 'claude',
+                  app: 'claude',
+                  exists: true,
+                  configSource: 'global',
+                  isOAuth: true,
+                  oauthEmail
+                };
+              }
+            } else {
+              // 不是 OAuth，回退到 is_current
+              matchedRow = db.prepare("SELECT * FROM providers WHERE app_type='claude' AND is_current=1 LIMIT 1").get();
+            }
           }
           db.close();
 
-          if (matchedRow) {
+          if (matchedRow && !currentCcProvider) {
             // OAuth 官方账号：URL 为空，读取 ~/.claude.json 的账号邮箱作为显示信息
             let oauthEmail = '';
             if (!actualUrl) {
@@ -7256,6 +7326,40 @@ async function startServer() {
       } else {
         console.log('[配置监听] 全局配置文件不存在，跳过监听');
       }
+
+      // 监听 ~/.claude.json（OAuth 账号信息变化）
+      const claudeJsonPath = path.join(os.homedir(), '.claude.json');
+      if (existsSync(claudeJsonPath)) {
+        try {
+          const { watchFile } = await import('fs');
+          let lastJsonMtime = 0;
+          try {
+            const stats = await import('fs/promises').then(fs => fs.stat(claudeJsonPath));
+            lastJsonMtime = stats.mtimeMs;
+          } catch {}
+
+          watchFile(claudeJsonPath, { interval: 2000 }, (curr, prev) => {
+            if (curr.mtimeMs !== prev.mtimeMs && curr.mtimeMs !== lastJsonMtime) {
+              lastJsonMtime = curr.mtimeMs;
+              console.log('[配置监听] 检测到 ~/.claude.json 变化（OAuth 账号状态可能改变）');
+              // 使用相同的防抖机制
+              if (configWatchDebounce) {
+                clearTimeout(configWatchDebounce);
+              }
+              configWatchDebounce = setTimeout(refreshAllProviders, 500);
+            }
+          });
+          console.log(`[配置监听] 已启动 OAuth 账号文件监听: ${claudeJsonPath}`);
+        } catch (err) {
+          console.error('[配置监听] 启动 OAuth 文件监听失败:', err.message);
+        }
+      }
+
+      // 启动时刷新一次所有会话的供应商信息（DB 恢复的可能是旧数据）
+      setTimeout(() => {
+        console.log('[配置监听] 启动时刷新所有会话供应商信息');
+        refreshAllProviders();
+      }, 2000);
     });
   } catch (err) {
     console.error('[Server] 启动服务器失败:', err);
