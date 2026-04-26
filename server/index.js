@@ -1148,18 +1148,37 @@ function getCurrentProvider(appType, workingDir = null, tmuxSessionName = null) 
       }
 
       // 最高优先级：读取正在运行的 claude 进程的真实环境变量
-      // 仅当进程 URL 与 settings.json URL 一致时才使用（避免 CC Switch 切换后旧进程覆盖新配置）
       const procEnv = readClaudeProcessEnv(tmuxSessionName);
       if (procEnv && procEnv.ANTHROPIC_BASE_URL) {
         const procUrl = procEnv.ANTHROPIC_BASE_URL.replace(/\/+$/, '');
         const settingsUrl = actualApiUrl.replace(/\/+$/, '');
         if (procUrl === settingsUrl) {
-          // 进程 URL 与配置一致，可信任进程环境变量（用于读取 API Key 等）
           actualApiKey = procEnv.ANTHROPIC_AUTH_TOKEN || procEnv.ANTHROPIC_API_KEY || actualApiKey;
           actualModel = procEnv.ANTHROPIC_MODEL || actualModel;
           configSource = 'process';
+        } else if (!actualApiUrl) {
+          // settings.json env 为空（已切到 OAuth），但进程还在用旧的第三方 API
+          actualApiUrl = procUrl;
+          actualApiKey = procEnv.ANTHROPIC_AUTH_TOKEN || procEnv.ANTHROPIC_API_KEY || '';
+          actualModel = procEnv.ANTHROPIC_MODEL || '';
+          configSource = 'process';
         }
-        // 若不一致：settings.json 已更新但进程未重启，以 settings.json 为准，不覆盖
+      }
+
+      // 补充：如果 procEnv 读不到（macOS 限制），从终端 /status 输出中解析
+      if (!actualApiUrl && tmuxSessionName) {
+        try {
+          const paneContent = execSync(
+            `${getTmuxPrefix()} capture-pane -t "${tmuxSessionName}" -p -S -30 2>/dev/null`,
+            { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }
+          );
+          const baseUrlMatch = paneContent.match(/Anthropic base URL:\s+(https?:\/\/\S+)/i);
+          if (baseUrlMatch) {
+            actualApiUrl = baseUrlMatch[1].replace(/\/+$/, '');
+            configSource = 'process';
+            console.log(`[getCurrentProvider] 从终端内容解析到 base URL: ${actualApiUrl}`);
+          }
+        } catch {}
       }
 
       // 模型来源：settings.json 的 model 字段（/model 命令持久化的值）
@@ -7237,18 +7256,18 @@ async function startServer() {
 
         for (const session of sessions) {
           try {
-            // 用 CC Switch is_current provider 更新会话（精确匹配，不依赖 URL 反查）
-            if (currentCcProvider) {
+            // 先用 getCurrentProvider 检测进程实际状态（能读终端内容和进程 env）
+            const sessionProvider = await getCurrentProvider('claude', session.workingDir, session.tmuxSessionName);
+            if (sessionProvider.exists && sessionProvider.configSource === 'process') {
+              // 进程实际在用第三方 API（未重启），以进程状态为准
+              session.claudeProvider = sessionProvider;
+            } else if (currentCcProvider) {
+              // 进程已重启或无法检测，用全局配置
               session.claudeProvider = currentCcProvider;
-              sessionManager.updateSession(session);
-            } else {
-              // 兜底：用 getCurrentProvider（可能 URL 匹配不准）
-              const claudeProvider = await getCurrentProvider('claude', session.workingDir, null);
-              if (claudeProvider.exists) {
-                session.claudeProvider = claudeProvider;
-                sessionManager.updateSession(session);
-              }
+            } else if (sessionProvider.exists) {
+              session.claudeProvider = sessionProvider;
             }
+            sessionManager.updateSession(session);
 
             // 如果该会话有本地配置覆盖了全局，跳过重启（本地配置优先，不受全局切换影响）
             const localConfigPath = session.workingDir

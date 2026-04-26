@@ -44,7 +44,12 @@ class ClaudeSessionFixer {
       /"signature":\s*"Field required"/i,  // JSON 格式的签名字段缺失错误
       // 通用会话污染错误
       /unexpected.*content.*type/i,
-      /invalid.*message.*format/i
+      /invalid.*message.*format/i,
+      // 空内容错误（移除 thinking 后 content 变空）
+      /text content blocks must be non-empty/i,
+      /content blocks must be non-empty/i,
+      // 请求格式错误（上游 API 不支持某些字段）
+      /Improperly formed request/i
     ];
 
     // 调试：检查每个模式
@@ -280,6 +285,8 @@ class ClaudeSessionFixer {
       // 处理每一行
       const fixedLines = [];
       let removedCount = 0;
+      let fixedEmptyCount = 0;
+      let removedMessagesCount = 0;
 
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -291,12 +298,11 @@ class ClaudeSessionFixer {
           if (data.message && data.message.content && Array.isArray(data.message.content)) {
             const originalLen = data.message.content.length;
 
-            // 移除 thinking 类型的内容块（完全移除，包括有 signature 的）
+            // 移除 thinking 类型的内容块
             data.message.content = data.message.content.filter(c => {
               if (typeof c === 'object' && c.type === 'thinking') {
-                return false;  // 移除所有 thinking blocks
+                return false;
               }
-              // 也移除可能残留的 signature 字段
               if (typeof c === 'object' && c.signature) {
                 delete c.signature;
               }
@@ -304,6 +310,28 @@ class ClaudeSessionFixer {
             });
 
             removedCount += originalLen - data.message.content.length;
+
+            // 移除空 text blocks（text 为空字符串）
+            data.message.content = data.message.content.filter(c => {
+              if (typeof c === 'object' && c.type === 'text' && (!c.text || c.text.trim() === '')) {
+                fixedEmptyCount++;
+                return false;
+              }
+              return true;
+            });
+
+            // 如果 content 变成空数组，处理方式取决于角色
+            if (data.message.content.length === 0) {
+              if (data.message.role === 'assistant') {
+                // assistant 消息 content 为空：整条消息删除
+                removedMessagesCount++;
+                continue;
+              } else {
+                // user 消息 content 为空：补一个占位 text block
+                data.message.content = [{ type: 'text', text: '.' }];
+                fixedEmptyCount++;
+              }
+            }
           }
 
           // 也检查顶层 content 数组（某些格式）
@@ -321,7 +349,21 @@ class ClaudeSessionFixer {
             });
 
             removedCount += originalLen - data.content.length;
+
+            // 移除空 text blocks
+            data.content = data.content.filter(c => {
+              if (typeof c === 'object' && c.type === 'text' && (!c.text || c.text.trim() === '')) {
+                fixedEmptyCount++;
+                return false;
+              }
+              return true;
+            });
           }
+
+          // 清理可能导致 "Improperly formed request" 的字段
+          // 某些上游 API 不支持 thinking 相关的顶层参数
+          if (data.thinking) delete data.thinking;
+          if (data.budget_tokens !== undefined) delete data.budget_tokens;
 
           fixedLines.push(JSON.stringify(data) + '\n');
         } catch (jsonErr) {
@@ -333,13 +375,15 @@ class ClaudeSessionFixer {
       // 写回文件
       await fs.writeFile(filepath, fixedLines.join(''), 'utf-8');
 
-      console.log(`[ClaudeSessionFixer] 修复完成！移除了 ${removedCount} 个 thinking blocks`);
+      console.log(`[ClaudeSessionFixer] 修复完成！移除 ${removedCount} 个 thinking blocks, 修复 ${fixedEmptyCount} 个空内容, 删除 ${removedMessagesCount} 条空消息`);
 
       return {
         success: true,
         backupPath,
         removedCount,
-        message: `修复完成！移除了 ${removedCount} 个 thinking blocks。备份文件: ${backupPath}`
+        fixedEmptyCount,
+        removedMessagesCount,
+        message: `修复完成！移除 ${removedCount} 个 thinking blocks, 修复 ${fixedEmptyCount} 个空内容, 删除 ${removedMessagesCount} 条空消息`
       };
 
     } catch (err) {
