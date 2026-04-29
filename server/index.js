@@ -4464,9 +4464,9 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
     let localConfig = { env: {} };
 
     if (appType === 'claude') {
-      // 判断是否为 OAuth：useOAuth 标记 或 env 为空对象（无 ANTHROPIC_BASE_URL）
-      const isOAuth = sc.useOAuth || (sc.env && Object.keys(sc.env).length === 0) ||
-                      (!sc.env?.ANTHROPIC_BASE_URL && !sc.claude?.apiUrl && !sc.openai?.apiUrl);
+      // 判断是否为 OAuth：仅当明确标记 useOAuth 时才视为 OAuth
+      // env 为空不代表 OAuth（可能是 provider 配置不完整，如 Whaty）
+      const isOAuth = !!sc.useOAuth;
       if (isOAuth) {
         // OAuth 类型（Claude Official）：必须清除 settings 里残留的 ANTHROPIC_* env，
         // 否则 Claude Code 会继续使用上一个 relay 的 URL/Token，导致面板显示官方但实际走旧 relay。
@@ -4524,7 +4524,7 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
       } else {
         // 构造新的 env 块
         let newEnv = {};
-        if (sc.env) {
+        if (sc.env && Object.keys(sc.env).length > 0) {
           newEnv = { ...sc.env };
         } else {
           const apiType = sc.apiType || 'openai';
@@ -4532,6 +4532,11 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
           if (apiConf.apiUrl) newEnv.ANTHROPIC_BASE_URL = apiConf.apiUrl;
           if (apiConf.apiKey) newEnv.ANTHROPIC_API_KEY = apiConf.apiKey;
         }
+
+        // 如果 env 为空（provider 配置不完整），不写入配置文件，只更新 DB is_current
+        if (Object.keys(newEnv).length === 0) {
+          console.log('[Provider Switch] provider env 为空，跳过配置写入:', targetProvider.name);
+        } else {
         localConfig.env = newEnv;
 
         const workingDir = session.workingDir;
@@ -4562,6 +4567,7 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
             provider: targetProvider.name, url: newEnv.ANTHROPIC_BASE_URL
           });
         }
+        } // end if (Object.keys(newEnv).length > 0)
       }
     } else if (appType === 'codex') {
       // CC Switch codex settingsConfig: { auth: {...}, config: "TOML字符串" }
