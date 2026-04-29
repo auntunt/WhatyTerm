@@ -14,6 +14,9 @@ process.on('unhandledRejection', (reason, promise) => {
   getCrashReporter()?.report('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason))).catch(() => {});
 });
 
+process.on('SIGTERM', () => { sleepPrevention?.destroy(); process.exit(0); });
+process.on('SIGINT', () => { sleepPrevention?.destroy(); process.exit(0); });
+
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -113,6 +116,7 @@ import PlannerService from './services/PlannerService.js';
 import EvaluatorService from './services/EvaluatorService.js';
 import telemetryService from './services/TelemetryService.js';
 import crashReporter from './services/CrashReporter.js';
+import sleepPrevention from './services/SleepPreventionService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2421,6 +2425,20 @@ app.post('/api/project-recordings/migrate', (req, res) => {
   }
 });
 
+// 休眠阻止 API
+app.get('/api/sleep-prevention', (req, res) => {
+  res.json(sleepPrevention.status);
+});
+
+app.post('/api/sleep-prevention/toggle', (req, res) => {
+  if (sleepPrevention.isActive) {
+    sleepPrevention.release();
+  } else {
+    sleepPrevention.prevent('手动开启');
+  }
+  res.json(sleepPrevention.status);
+});
+
 // API 路由使用认证中间件
 app.use('/api', authMiddleware);
 
@@ -4379,6 +4397,12 @@ async function runBackgroundStatusAnalysis() {
 setInterval(runBackgroundStatusAnalysis, AI_ANALYSIS_INTERVAL);
 // 启动后 5 秒执行第一次分析
 setTimeout(runBackgroundStatusAnalysis, 5000);
+
+// 每 60 秒检查是否需要阻止休眠
+setInterval(() => {
+  const sessions = Array.from(sessionManager.sessions.values());
+  sleepPrevention.update(sessions);
+}, 60000);
 
 // 标志位：switchProviderStateMachine 执行期间为 true，防止 watchFile 触发 refreshAllProviders 重复重启
 let _providerSwitchInProgress = false;
