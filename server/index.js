@@ -4732,10 +4732,10 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
       tpUrl = tpSc.env?.GOOGLE_GEMINI_BASE_URL || tpSc.env?.GEMINI_BASE_URL || '';
       tpKey = tpSc.env?.GEMINI_API_KEY || tpSc.env?.API_KEY || '';
     }
-    const wroteLocalConfig = appType === 'claude' && !sc.useOAuth && !!session.workingDir;
+    const wroteLocalConfig = appType === 'claude' && !isOAuth && !!session.workingDir;
     // OAuth 官方账号：读取 ~/.claude.json 的账号邮箱
     let oauthEmail = '';
-    if (!tpUrl && appType === 'claude') {
+    if (isOAuth && appType === 'claude') {
       try {
         const claudeJson = JSON.parse(readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8'));
         oauthEmail = claudeJson.oauthAccount?.emailAddress || '';
@@ -4751,7 +4751,7 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
       app: appType,
       exists: true,
       configSource: wroteLocalConfig ? 'local' : 'global',
-      isOAuth: !tpUrl && appType === 'claude',
+      isOAuth,
       oauthEmail
     };
 
