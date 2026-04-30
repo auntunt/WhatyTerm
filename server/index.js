@@ -3768,6 +3768,63 @@ async function runBackgroundAutoAction() {
 
       const hookAge = session.lastHookEventAt ? Date.now() - session.lastHookEventAt : Infinity;
       const hookState = session.hookState || 'unknown';
+
+      // hookState unknown 时，优先使用 AI 分析的缓存结果（能识别 select/confirm 等界面）
+      if (hookState === 'unknown') {
+        const cachedStatus = aiStatusCache.get(sessionData.id);
+        if (cachedStatus && cachedStatus.needsAction && cachedStatus.suggestedAction) {
+          console.log(`[后台自动操作] 会话 ${session.name}: hook unknown，使用 AI 缓存: ${cachedStatus.currentState}, action=${cachedStatus.suggestedAction}`);
+          const status = cachedStatus;
+          const action = status.suggestedAction;
+
+          const lastAction = lastActionMap.get(session.id);
+          const contentHash = computeContentHash(terminalContent, 500);
+          const cooldownTime = (status.actionType === 'select') ? 15000 : (status.actionType === 'single_char') ? 3000 : 30000;
+
+          if (lastAction && lastAction.action === action && lastAction.contentHash === contentHash && (now - lastAction.time) < cooldownTime) {
+            console.log(`[后台自动操作] 会话 ${session.name}: 跳过重复操作 "${action}" (冷却${cooldownTime/1000}秒)`);
+            session.isAutoActioning = false;
+            updateCheckState(sessionData.id, false, status);
+            continue;
+          }
+
+          if (!session.autoActionEnabled) {
+            session.isAutoActioning = false;
+            updateCheckState(sessionData.id, false, status);
+            continue;
+          }
+
+          const keyMap = { 'Enter': '\r', 'Tab': '\t', 'Escape': '\x1b' };
+          if (keyMap[action]) {
+            session.write(keyMap[action]);
+          } else if (status.actionType === 'select' && /^[1-9]$/.test(action)) {
+            const tmuxSession = session.tmuxSessionName;
+            const optionNum = parseInt(action);
+            console.log(`[后台自动操作] 会话 ${session.name}: 选项菜单选择第${action}项 (AI缓存)`);
+            try {
+              if (optionNum > 1) {
+                for (let i = 1; i < optionNum; i++) {
+                  execSync(`${getTmuxPrefix()} send-keys -t "${tmuxSession}" Down`);
+                }
+              }
+              setTimeout(() => {
+                try { execSync(`${getTmuxPrefix()} send-keys -t "${tmuxSession}" Enter`); } catch {}
+              }, 200);
+            } catch (e) {
+              console.error(`[后台自动操作] 会话 ${session.name}: 选项选择失败:`, e.message);
+            }
+          } else {
+            session.write(action);
+            setTimeout(() => session.write('\r'), 50);
+          }
+
+          lastActionMap.set(session.id, { action, contentHash, time: now });
+          session.isAutoActioning = false;
+          updateCheckState(sessionData.id, false, status);
+          continue;
+        }
+      }
+
       const status = {
         currentState: hookState === 'working' ? '工具执行中（Hook 检测）'
           : hookState === 'idle' ? '等待指令（Hook 检测）'
