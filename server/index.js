@@ -4520,7 +4520,21 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
     // localConfig 仅供后续（claude/gemini 的）重启逻辑读取 env
     let localConfig = { env: {} };
 
-    const isOAuth = appType === 'claude' && !!sc.useOAuth;
+    // 预先解析 provider 想要的 ANTHROPIC env（用于判断是否走清理路径）
+    let resolvedEnv = {};
+    if (appType === 'claude') {
+      if (sc.env && Object.keys(sc.env).length > 0) {
+        resolvedEnv = { ...sc.env };
+      } else {
+        const apiType = sc.apiType || 'openai';
+        const apiConf = sc[apiType] || {};
+        if (apiConf.apiUrl) resolvedEnv.ANTHROPIC_BASE_URL = apiConf.apiUrl;
+        if (apiConf.apiKey) resolvedEnv.ANTHROPIC_API_KEY = apiConf.apiKey;
+      }
+    }
+    // OAuth/Official 语义：显式标记 useOAuth，或 provider 没提供 ANTHROPIC_BASE_URL
+    // 后者覆盖了 "Claude Official"（DB 里 env={}，无 useOAuth 标记）的场景
+    const isOAuth = appType === 'claude' && (!!sc.useOAuth || !resolvedEnv.ANTHROPIC_BASE_URL);
     if (appType === 'claude') {
       if (isOAuth) {
         // OAuth 类型（Claude Official）：必须清除 settings 里残留的 ANTHROPIC_* env，
@@ -4577,21 +4591,8 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
         localConfig.env = {};
         console.log('[Provider Switch] Claude OAuth provider，已清理 env 配置:', targetProvider.name);
       } else {
-        // 构造新的 env 块
-        let newEnv = {};
-        if (sc.env && Object.keys(sc.env).length > 0) {
-          newEnv = { ...sc.env };
-        } else {
-          const apiType = sc.apiType || 'openai';
-          const apiConf = sc[apiType] || {};
-          if (apiConf.apiUrl) newEnv.ANTHROPIC_BASE_URL = apiConf.apiUrl;
-          if (apiConf.apiKey) newEnv.ANTHROPIC_API_KEY = apiConf.apiKey;
-        }
-
-        // 如果 env 为空（provider 配置不完整），不写入配置文件，只更新 DB is_current
-        if (Object.keys(newEnv).length === 0) {
-          console.log('[Provider Switch] provider env 为空，跳过配置写入:', targetProvider.name);
-        } else {
+        // 复用上方已解析的 resolvedEnv（含 ANTHROPIC_BASE_URL）
+        const newEnv = resolvedEnv;
         localConfig.env = newEnv;
 
         const workingDir = session.workingDir;
@@ -4622,7 +4623,6 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
             provider: targetProvider.name, url: newEnv.ANTHROPIC_BASE_URL
           });
         }
-        } // end if (Object.keys(newEnv).length > 0)
       }
     } else if (appType === 'codex') {
       // CC Switch codex settingsConfig: { auth: {...}, config: "TOML字符串" }
@@ -4709,13 +4709,36 @@ async function switchProviderStateMachine(session, appType, providerId, socket) 
 
     // 自动重启 Claude Code 让新配置生效（仅当检测到 Claude Code 正在运行时）
     if (appType === 'claude') {
-      const screenContent = session.getScreenContent?.() || '';
-      const isClaudeRunning = /esc to interrupt|Context left|\? for shortcuts|accept edits|Bypass mode/i.test(screenContent)
-        || /^>\s*$/m.test(screenContent.split('\n').slice(-5).join('\n'));
+      // 优先用进程树检测（最可靠，不受 /status 等对话框影响）
+      const tmuxName = session.tmuxSessionName;
+      let isClaudeRunning = false;
+      try {
+        const det = processDetector.detectCLI(tmuxName);
+        if (det && det.detected && det.cli === 'claude') isClaudeRunning = true;
+      } catch (e) {
+        console.error('[Provider Switch] 进程检测失败，回退到屏幕内容检测:', e.message);
+      }
+      // 进程检测失败时回退到屏幕正则
+      if (!isClaudeRunning) {
+        const screenContent = session.getScreenContent?.() || '';
+        isClaudeRunning = /esc to interrupt|Context left|\? for shortcuts|accept edits|Bypass mode/i.test(screenContent)
+          || /^>\s*$/m.test(screenContent.split('\n').slice(-5).join('\n'));
+      }
 
       if (isClaudeRunning) {
         emitStatus('RESTARTING', '正在重启 Claude Code...', 70);
-        const tmuxName = session.tmuxSessionName;
+
+        // 0. 先发 Esc 关闭可能打开的对话框（如 /status、/help）
+        //    Esc 在主提示符下无副作用，不会触发任何动作
+        try {
+          if (tmuxName) {
+            execSync(`${getTmuxPrefix()} send-keys -t "${tmuxName}" Escape`);
+            await new Promise(r => setTimeout(r, 150));
+          } else {
+            session.write('\x1b');
+            await new Promise(r => setTimeout(r, 150));
+          }
+        } catch (e) {}
 
         // 1. 发送 /exit 退出 Claude Code
         try {
