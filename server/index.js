@@ -1272,15 +1272,28 @@ function getCurrentProvider(appType, workingDir = null, tmuxSessionName = null) 
       };
     };
 
+    // 辅助函数：从 CC Switch 供应商配置中提取 base URL
+    const extractProviderUrl = (config) => {
+      // Claude 类型：env.ANTHROPIC_BASE_URL 或 baseURL
+      if (config.env?.ANTHROPIC_BASE_URL) return config.env.ANTHROPIC_BASE_URL;
+      if (config.baseURL) return config.baseURL;
+      // Codex/OpenAI 类型：从 TOML config 字段中提取 base_url
+      if (config.config && typeof config.config === 'string') {
+        const m = config.config.match(/base_url\s*=\s*"([^"]+)"/);
+        if (m) return m[1];
+      }
+      return '';
+    };
+
     // 辅助函数：根据 URL 在 CC Switch 数据库中查找供应商名称
     const findProviderName = (url, rows) => {
       if (!url || !rows) return '未知供应商';
-      const normalizedUrl = url.replace(/\/+$/, '');
+      const normalizedUrl = url.replace(/\/+$/, '').replace(/\/v\d+$/, '');
       for (const row of rows) {
         try {
           if (row.settings_config) {
             const config = JSON.parse(row.settings_config);
-            const providerUrl = (config.env?.ANTHROPIC_BASE_URL || config.baseURL || '').replace(/\/+$/, '');
+            const providerUrl = extractProviderUrl(config).replace(/\/+$/, '').replace(/\/v\d+$/, '');
             if (normalizedUrl === providerUrl) {
               return row.name || '未命名';
             }
@@ -1341,15 +1354,16 @@ function getCurrentProvider(appType, workingDir = null, tmuxSessionName = null) 
         }
 
         // 遍历供应商，找到 URL 匹配的（多个同 URL 时优先 URL+Key 精确匹配，其次 is_current）
-        const normalizedActual = actualApiUrl.replace(/\/+$/, '');
+        const normalizeUrl = (u) => u.replace(/\/+$/, '').replace(/\/v\d+$/, '');
+        const normalizedActual = normalizeUrl(actualApiUrl);
         let urlMatches = [];
         for (const row of rows) {
           try {
             if (row.settings_config) {
               const config = JSON.parse(row.settings_config);
-              const providerUrl = (config.env?.ANTHROPIC_BASE_URL || config.baseURL || '').replace(/\/+$/, '');
+              const providerUrl = normalizeUrl(extractProviderUrl(config));
               if (normalizedActual === providerUrl) {
-                const providerKey = config.env?.ANTHROPIC_AUTH_TOKEN || config.env?.ANTHROPIC_API_KEY || '';
+                const providerKey = config.env?.ANTHROPIC_AUTH_TOKEN || config.env?.ANTHROPIC_API_KEY || config.auth?.OPENAI_API_KEY || '';
                 urlMatches.push({ row, keyMatch: providerKey === actualApiKey });
               }
             }

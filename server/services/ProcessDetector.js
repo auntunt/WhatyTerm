@@ -74,10 +74,10 @@ class ProcessDetector {
         return { detected: false, cli: null, processName: null, pid: null };
       }
 
-      // 获取子进程的名称
+      // 获取子进程的名称和完整命令行
       const pidList = childPids.split('\n').filter(p => p).join(',');
       const processInfo = execSync(
-        `${cmdPrefix}ps -o pid=,comm= -p ${pidList} || true`,
+        `${cmdPrefix}ps -o pid=,args= -p ${pidList} || true`,
         { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
       ).trim();
 
@@ -88,21 +88,22 @@ class ProcessDetector {
       // 解析进程信息，检测 CLI 工具
       const lines = processInfo.split('\n');
       for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const pid = parseInt(parts[0]);
-          const processName = parts[1].toLowerCase();
+        const match = line.trim().match(/^(\d+)\s+(.+)$/);
+        if (match) {
+          const pid = parseInt(match[1]);
+          const fullCmd = match[2].toLowerCase();
+          const processName = fullCmd.split(/\s+/)[0].split('/').pop();
 
           // 检查是否是已知的 CLI 工具（从 CliRegistry 动态获取）
           const cliProcessNames = this.getCliProcessNames();
           for (const [cli, names] of Object.entries(cliProcessNames)) {
-            if (names.some(name => processName.includes(name))) {
-              return { detected: true, cli, processName: parts[1], pid };
+            if (names.some(name => processName.includes(name) || fullCmd.includes(`/bin/${name}`) || fullCmd.includes(`/${name}/`))) {
+              return { detected: true, cli, processName: match[2].split(/\s+/)[0].split('/').pop(), pid };
             }
           }
 
           // 记录未知进程（用于学习）
-          this._recordUnknownProcess(parts[1], tmuxSession);
+          this._recordUnknownProcess(match[2].split(/\s+/)[0].split('/').pop(), tmuxSession);
         }
       }
 

@@ -1361,12 +1361,11 @@ ${historyText || '(空)'}
 
     // 检测 Codex CLI 特征
     // 注意：必须使用严格的模式，避免与 Claude Code 输出混淆
-    // 移除了容易产生误报的模式：
-    // - "Updated Plan" / "Worked for Xm Xs" - 可能在多种 CLI 中出现
-    // - "model: gpt-*" - Claude Code 讨论 GPT 模型时会匹配
     if (/OpenAI Codex|codex-cli|openai.*codex/i.test(lastLines) ||
         /codex\s+v\d+\.\d+/i.test(lastLines) ||
-        /Codex\s*>\s*$/m.test(lastLines)) {
+        /Codex\s*>\s*$/m.test(lastLines) ||
+        /gpt-\d+(\.\d+)?\s+(low|medium|high|xhigh)\s*[·•]/i.test(lastLines) ||
+        /Goal achieved/i.test(lastLines) && /gpt-/i.test(lastLines)) {
       return 'codex';
     }
 
@@ -1458,17 +1457,27 @@ ${historyText || '(空)'}
     // 检测 "Do you want to ..." 确认界面（只检查最后 3000 字符，避免匹配历史内容）
     const earlyLast3000 = earlyCleanContent.slice(-3000);
     const isEditConfirmEarly = /Do you want to (make this edit|create|delete|overwrite|run|allow|execute)/i.test(earlyLast3000);
-    const isProceedConfirmEarly = /Do you want to proceed\?/i.test(earlyLast3000);
+    const isProceedConfirmEarly = /(Do you want to|Would you like to) (proceed|run|execute)/i.test(earlyLast3000);
+    const isPlanExecuteEarly = /written up a plan.*ready to execute/i.test(earlyLast3000);
     const hasOption1YesEarly = /1\.\s*Yes/i.test(earlyLast3000);
     const hasOption2YesEarly = /2\.\s*Yes/i.test(earlyLast3000);
     // 检测选项 2 是否是"永久允许某命令模式"（don't ask again for: 具体命令）
     // 这种情况不应自动选 2，因为会永久跳过该命令的确认
     const isOption2PermanentAllowEarly = /2\.\s*Yes,\s*and\s+don.t\s+ask\s+again\s+for:/i.test(earlyLast3000);
 
-    if ((isEditConfirmEarly || isProceedConfirmEarly) && hasOption1YesEarly) {
-      // 如果选项 2 是永久允许某命令模式，选 1（仅本次允许）
-      const selectOption = (hasOption2YesEarly && !isOption2PermanentAllowEarly) ? '2' : '1';
-      console.log(`[AIEngine] [高优先级] 检测到确认界面（插件分析前），选择选项 ${selectOption}${isOption2PermanentAllowEarly ? '（跳过永久允许）' : ''}`);
+    if ((isEditConfirmEarly || isProceedConfirmEarly || isPlanExecuteEarly) && hasOption1YesEarly) {
+      // Plan 执行确认（auto-accept edits）：选 1
+      // 文件操作确认（allow all edits this session）：选 2
+      // 永久允许某命令模式：选 1（避免永久跳过确认）
+      let selectOption;
+      if (isPlanExecuteEarly) {
+        selectOption = '1';
+      } else if (hasOption2YesEarly && !isOption2PermanentAllowEarly) {
+        selectOption = '2';
+      } else {
+        selectOption = '1';
+      }
+      console.log(`[AIEngine] [高优先级] 检测到确认界面（插件分析前），选择选项 ${selectOption}${isPlanExecuteEarly ? '（Plan执行）' : isOption2PermanentAllowEarly ? '（跳过永久允许）' : ''}`);
       return {
         currentState: `${cliNameEarly}确认界面`,
         workingDir: '未显示',
