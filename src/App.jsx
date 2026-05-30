@@ -1895,10 +1895,11 @@ export default function App() {
                    currentSession.aiType === 'codex' ? 'CODEX' :
                    currentSession.aiType === 'gemini' ? 'GEMINI' :
                    currentSession.aiType === 'droid' ? 'DROID' :
-                   currentSession.aiType === 'opencode' ? 'OPENCODE' : 'AI'}
+                   currentSession.aiType === 'opencode' ? 'OPENCODE' :
+                   currentSession.aiType === 'grok' ? 'GROK' : 'AI'}
                 </h4>
-                {/* Droid 使用官方账号，不显示供应商切换按钮 */}
-                {currentSession.aiType !== 'droid' && (
+                {/* Droid/Grok 使用官方 OAuth 账号，不显示供应商切换按钮 */}
+                {currentSession.aiType !== 'droid' && currentSession.aiType !== 'grok' && (
                 <button
                   ref={providerButtonRef}
                   onClick={openProviderDropdown}
@@ -1936,6 +1937,39 @@ export default function App() {
                       }}>
                         OAuth
                       </span>
+                    </div>
+                  );
+                }
+
+                // Grok 使用 x.ai OAuth 账号，特殊处理
+                if (currentSession.aiType === 'grok') {
+                  const gp = currentSession.grokProvider;
+                  return (
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <p style={{ fontWeight: 500, color: 'hsl(0 0% 75%)', margin: 0 }}>
+                          Grok (xAI) 官方
+                        </p>
+                        <span style={{
+                          fontSize: '9px',
+                          padding: '1px 4px',
+                          borderRadius: '3px',
+                          background: 'hsl(0 0% 50% / 0.2)',
+                          color: 'hsl(0 0% 75%)'
+                        }}>
+                          OAuth
+                        </span>
+                      </div>
+                      {gp?.oauthEmail && (
+                        <p className="mono" style={{ fontSize: '11px', color: '#10b981', marginTop: '4px', wordBreak: 'break-all' }}>
+                          {gp.oauthEmail}
+                        </p>
+                      )}
+                      {gp?.model && (
+                        <p className="mono" style={{ fontSize: '11px', color: 'hsl(var(--muted-foreground))', marginTop: '2px' }}>
+                          <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'hsl(0 0% 50% / 0.15)', color: 'hsl(0 0% 75%)' }}>模型</span> {gp.model}
+                        </p>
+                      )}
                     </div>
                   );
                 }
@@ -4228,6 +4262,7 @@ function CreateSessionModal({ onClose, onCreate }) {
               <option value="claude">Claude</option>
               <option value="codex">Codex</option>
               <option value="gemini">Gemini</option>
+              <option value="grok">Grok</option>
             </select>
           </div>
           <div className="form-group">

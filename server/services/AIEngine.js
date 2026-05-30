@@ -50,7 +50,8 @@ function getCliCommand(aiType) {
     'codex': 'codex',
     'gemini': 'gemini',
     'droid': 'droid',
-    'opencode': 'opencode'
+    'opencode': 'opencode',
+    'grok': 'grok -c'
   };
   return commands[aiType] || commands['claude'];
 }
@@ -66,7 +67,8 @@ function getCliName(aiType) {
     'codex': 'OpenAI Codex',
     'gemini': 'Google Gemini',
     'droid': 'Droid AI',
-    'opencode': 'OpenCode'
+    'opencode': 'OpenCode',
+    'grok': 'Grok (xAI)'
   };
   return names[aiType] || names['claude'];
 }
@@ -1408,6 +1410,15 @@ ${historyText || '(空)'}
       return 'opencode';
     }
 
+    // 检测 Grok CLI 特征（xAI Grok Build TUI）
+    // 特征：输入框边框 "Grok Build · ..."、底部栏 Ctrl+o:interject、运行态 Waiting…、完成态 Turn completed in
+    if (/Grok Build/i.test(lastLines) ||
+        /Ctrl\+o:interject/i.test(lastLines) ||
+        /Turn completed in \d/i.test(lastLines) ||
+        /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Waiting…/i.test(lastLines)) {
+      return 'grok';
+    }
+
     return null;
   }
 
@@ -1530,6 +1541,53 @@ ${historyText || '(空)'}
           actionType: 'text_input',
           suggestedAction: '按建议顺序继续开发',
           actionReason: '列出多个方向待选，自动按建议顺序推进',
+          suggestion: null,
+          updatedAt: new Date().toISOString(),
+          preAnalyzed: true,
+          detectedCLI,
+          ...pluginInfo
+        };
+      }
+    }
+
+    // === 高优先级：Grok 状态检测（必须在插件分析之前，否则 DefaultPlugin 会拦截返回"状态不明确"）===
+    // Grok 是盒装 TUI（│ ❯ │），与现有 CLI 的 ❯$ / accept edits 模式都不同，需专门处理
+    if (aiType === 'grok') {
+      const grokTail = earlyCleanContent.slice(-1500);
+      const hasCancelBar = /Ctrl\+c:cancel|Ctrl\+o:interject/i.test(grokTail);
+      const hasSpinnerWaiting = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Waiting|Waiting…/i.test(grokTail);
+      const hasTimingToken = /\d+\.\d+s\s+⇣/i.test(grokTail);
+      // 运行中：底部栏有 cancel/interject，或有 spinner+Waiting，或计时+token 指示器
+      if (hasCancelBar || hasSpinnerWaiting || hasTimingToken) {
+        console.log('[AIEngine] 检测到 Grok 运行中，不打断');
+        return {
+          currentState: '程序运行中',
+          workingDir: '未显示',
+          recentAction: '执行中',
+          needsAction: false,
+          actionType: 'none',
+          suggestedAction: null,
+          actionReason: 'Grok 正在工作，不应打断',
+          suggestion: null,
+          updatedAt: new Date().toISOString(),
+          preAnalyzed: true,
+          detectedCLI,
+          ...pluginInfo
+        };
+      }
+      // 空闲：盒装提示符 │ ❯ + 空闲底部栏（Shift+Tab:mode 且无 cancel）
+      const hasGrokBoxPrompt = /[│|]\s*[❯>]\s/.test(grokTail);
+      const hasIdleBar = /Shift\+Tab:mode/i.test(grokTail);
+      if (hasGrokBoxPrompt && hasIdleBar) {
+        console.log('[AIEngine] 检测到 Grok 空闲（盒装提示符 + 空闲状态栏），自动发送继续');
+        return {
+          currentState: 'Grok 空闲',
+          workingDir: '未显示',
+          recentAction: '等待输入',
+          needsAction: true,
+          actionType: 'text_input',
+          suggestedAction: '继续',
+          actionReason: '空闲状态，自动继续开发',
           suggestion: null,
           updatedAt: new Date().toISOString(),
           preAnalyzed: true,
@@ -1770,6 +1828,15 @@ ${historyText || '(空)'}
         /\[build\].*thinking|\[plan\].*thinking/i.test(cleanContent) ||
         /Thinking|Processing|Generating/i.test(cleanContent) ||
         /\(\d+m\s*\d+s\)|\d+m\s+\d+s\s*$/.test(cleanContent.slice(-500))
+      );
+    } else if (aiType === 'grok') {
+      // Grok 运行/空闲态已在插件分析前的高优先级块处理（见上方 aiType==='grok' 分支）
+      // 此处保留兜底：若走到这里仍按运行态标志判断
+      const grokLast500 = fullyCleanContent.slice(-500);
+      isRunning = !isConfirmDialog && (
+        /Ctrl\+c:cancel|Ctrl\+o:interject/i.test(grokLast500) ||
+        /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Waiting|Waiting…/i.test(grokLast500) ||
+        /\d+\.\d+s\s+⇣/i.test(grokLast500)
       );
     } else {
       // 通用检测（排除确认界面）

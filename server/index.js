@@ -1253,6 +1253,47 @@ function getCurrentProvider(appType, workingDir = null, tmuxSessionName = null) 
     } else if (appType === 'gemini') {
       // gemini 的 URL/Key 不在 ~/.gemini/settings.json 里，只能从 CC Switch DB 的 is_current 读
       // 这里先不读，下面 DB 查询分支会走 is_current 回退路径返回
+    } else if (appType === 'grok') {
+      // Grok CLI 使用 x.ai OAuth 认证，不走 CC Switch，从 ~/.grok 直接读取
+      let grokEmail = '';
+      let grokModel = 'grok-build';
+      let grokUrl = '';
+      try {
+        const grokAuthPath = path.join(os.homedir(), '.grok', 'auth.json');
+        if (existsSync(grokAuthPath)) {
+          const auth = JSON.parse(readFileSync(grokAuthPath, 'utf8'));
+          // auth.json 的 key 形如 "https://auth.x.ai::<uuid>"，值含 email
+          for (const v of Object.values(auth)) {
+            if (v && typeof v === 'object' && v.email) { grokEmail = v.email; break; }
+          }
+        }
+      } catch (e) {
+        console.error('[getCurrentProvider] 读取 Grok auth 失败:', e.message);
+      }
+      try {
+        const grokModelsPath = path.join(os.homedir(), '.grok', 'models_cache.json');
+        if (existsSync(grokModelsPath)) {
+          const mc = JSON.parse(readFileSync(grokModelsPath, 'utf8'));
+          const firstModel = mc.models ? Object.values(mc.models)[0] : null;
+          if (firstModel?.info) {
+            grokModel = firstModel.info.model || grokModel;
+            grokUrl = firstModel.info.base_url || '';
+          }
+        }
+      } catch (e) {}
+      return resolve({
+        id: 'grok',
+        name: 'Grok (xAI)',
+        url: grokUrl,
+        apiKey: maskApiKey(''),
+        model: grokModel,
+        apiType: 'grok',
+        app: 'grok',
+        exists: !!grokEmail,
+        configSource: 'global',
+        isOAuth: true,
+        oauthEmail: grokEmail
+      });
     }
 
     // 读取 OAuth 官方账号邮箱（仅 claude 且无 URL 时有意义）
@@ -4409,6 +4450,7 @@ async function runBackgroundStatusAnalysis() {
           const provider = await getCurrentProvider(cliType, session.workingDir, session.tmuxSessionName);
           const currentProvider = cliType === 'claude' ? session.claudeProvider :
                                   cliType === 'codex' ? session.codexProvider :
+                                  cliType === 'grok' ? session.grokProvider :
                                   session.geminiProvider;
 
           const providerChanged = !currentProvider || currentProvider.url !== provider.url || currentProvider.name !== provider.name;
@@ -4428,6 +4470,8 @@ async function runBackgroundStatusAnalysis() {
                 session.codexProvider = provider;
               } else if (cliType === 'gemini') {
                 session.geminiProvider = provider;
+              } else if (cliType === 'grok') {
+                session.grokProvider = provider;
               }
             }
           }
@@ -5180,6 +5224,8 @@ io.on('connection', (socket) => {
         session.codexProvider = provider;
       } else if (session.aiType === 'gemini') {
         session.geminiProvider = provider;
+      } else if (session.aiType === 'grok') {
+        session.grokProvider = provider;
       }
 
       historyLogger.log(session.id, {
@@ -5204,6 +5250,8 @@ io.on('connection', (socket) => {
             session.codexProvider = detectedProvider;
           } else if (detectedCLI === 'gemini') {
             session.geminiProvider = detectedProvider;
+          } else if (detectedCLI === 'grok') {
+            session.grokProvider = detectedProvider;
           }
           console.log(`[Session创建] 已更新供应商: ${detectedProvider.name}`);
         }
@@ -5348,6 +5396,8 @@ io.on('connection', (socket) => {
         session.codexProvider = provider;
       } else if (session.aiType === 'gemini') {
         session.geminiProvider = provider;
+      } else if (session.aiType === 'grok') {
+        session.grokProvider = provider;
       }
 
       // 保存会话

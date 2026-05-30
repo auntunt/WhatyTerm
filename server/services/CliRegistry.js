@@ -99,6 +99,26 @@ const DEFAULT_CLI_TOOLS = {
     builtin: true,
     enabled: true,
     createdAt: '2025-01-01T00:00:00.000Z'
+  },
+  grok: {
+    id: 'grok',
+    name: 'Grok (xAI)',
+    processNames: ['grok'],
+    terminalPatterns: {
+      // 运行中：底部状态栏含 cancel/interject、盲文 spinner + Waiting…、计时+token 指示器
+      running: ['Ctrl\\+c:cancel', 'Ctrl\\+o:interject', '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\\s*Waiting', 'Waiting…', '\\d+\\.\\d+s\\s+⇣'],
+      // 空闲：完成提示 + 输入框边框，底部栏无 cancel
+      idle: ['Turn completed in', 'Grok Build', 'Shift\\+Tab:mode'],
+      // 确认界面文案待实测回填（always-approve 模式下无确认）
+      confirm: ['Allow this|Approve|1\\.\\s*Yes']
+    },
+    commands: {
+      start: 'grok -c',
+      quit: '/quit'
+    },
+    builtin: true,
+    enabled: true,
+    createdAt: '2026-05-30T00:00:00.000Z'
   }
 };
 

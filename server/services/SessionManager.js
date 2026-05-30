@@ -839,6 +839,7 @@ export class Session {
       claudeProvider: this.claudeProvider || null,
       codexProvider: this.codexProvider || null,
       geminiProvider: this.geminiProvider || null,
+      grokProvider: this.grokProvider || null,
       // 操作统计
       stats: this.stats || { total: 0, success: 0, failed: 0, aiAnalyzed: 0, preAnalyzed: 0 }
     };
