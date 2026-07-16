@@ -1298,22 +1298,47 @@ ${historyText || '(空)'}
 
       const parsed = JSON.parse(jsonStr);
 
+      // Schema 校验：action 必须是已知枚举值
+      const VALID_ACTIONS = ['complete', 'need_input', 'command'];
+      if (!parsed || typeof parsed !== 'object') {
+        console.warn('[AIEngine] AI 响应不是对象，忽略');
+        return null;
+      }
+      if (!VALID_ACTIONS.includes(parsed.action)) {
+        console.warn(`[AIEngine] AI 响应 action 无效: "${parsed.action}"，忽略`);
+        return null;
+      }
+
       if (parsed.action === 'complete') {
         return {
           type: 'complete',
-          summary: parsed.summary
+          summary: typeof parsed.summary === 'string' ? parsed.summary : ''
         };
       } else if (parsed.action === 'need_input') {
+        if (typeof parsed.question !== 'string' || !parsed.question.trim()) {
+          console.warn('[AIEngine] need_input 缺少 question 字段，忽略');
+          return null;
+        }
         return {
           type: 'need_input',
           question: parsed.question
         };
       } else if (parsed.action === 'command') {
+        // command 字段必须是非空字符串
+        if (typeof parsed.command !== 'string' || !parsed.command.trim()) {
+          console.warn('[AIEngine] command 字段为空或非字符串，忽略');
+          return null;
+        }
+        // 限制 command 长度，防止超长注入
+        if (parsed.command.length > 2048) {
+          console.warn(`[AIEngine] command 长度超限 (${parsed.command.length})，忽略`);
+          return null;
+        }
         const isDangerous = this._isDangerous(parsed.command);
         return {
           type: 'command',
           command: parsed.command,
-          reasoning: parsed.reasoning,
+          reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
           isDangerous
         };
       }
@@ -2725,14 +2750,16 @@ ${this._buildProgressContext(projectContext)}
       }
 
       return {
-        currentState: parsed.currentState || '未知状态',
-        workingDir: parsed.workingDir || '未知',
-        recentAction: parsed.recentAction || '无',
-        needsAction: parsed.needsAction || false,
-        actionType: parsed.actionType || 'none',
-        suggestedAction: parsed.suggestedAction || null,
-        actionReason: parsed.actionReason || null,
-        suggestion: parsed.suggestion || null,
+        currentState: typeof parsed.currentState === 'string' ? parsed.currentState : '未知状态',
+        workingDir: typeof parsed.workingDir === 'string' ? parsed.workingDir : '未知',
+        recentAction: typeof parsed.recentAction === 'string' ? parsed.recentAction : '无',
+        needsAction: parsed.needsAction === true,   // 严格布尔，防止任意 truthy 触发操作
+        actionType: ['confirm', 'select', 'text_input', 'shell_command', 'none'].includes(parsed.actionType)
+          ? parsed.actionType
+          : 'none',
+        suggestedAction: typeof parsed.suggestedAction === 'string' ? parsed.suggestedAction : null,
+        actionReason: typeof parsed.actionReason === 'string' ? parsed.actionReason : null,
+        suggestion: typeof parsed.suggestion === 'string' ? parsed.suggestion : null,
         updatedAt: new Date().toISOString()
       };
     } catch (err) {
