@@ -207,11 +207,6 @@ export class DeliveryEngine {
     // 把接口契约注入到任务描述，确保上下文隔离
     const enrichedTask = this._buildIsolatedTaskContext(task, session);
 
-    // 把任务注入 ProgressManager（RalphEngine 从这里取任务）
-    progressManager.setIsolatedTask(sessionId + ':' + task.id, enrichedTask);
-
-    // 启动一个专属的 micro loop 会话（隔离上下文）
-    // 复用当前 session，但通过任务 ID 隔离 prompt context
     try {
       await this._runMicroLoop(sessionId, session, enrichedTask, opts);
       return { passed: true };
@@ -222,21 +217,48 @@ export class DeliveryEngine {
 
   // ── Micro Loop：直接调用 RalphEngine 的 developer+validator ───────
   async _runMicroLoop(sessionId, session, task, opts) {
-    // RalphEngine 的 _runDeveloper / _runValidator 是内部方法
-    // 通过 ProgressManager 注入单个任务，启动 ralph 只跑这一个任务
     const taskSessionId = sessionId + ':micro:' + task.id;
 
-    // 创建隔离的 progress 状态
+    // 用 setMode + setFeatures 初始化独立进度状态
     progressManager.setMode(taskSessionId, 'autonomous');
     progressManager.setFeatures(taskSessionId, [task]);
 
-    // 使用 ralphEngine 的内部方法跑 developer→validator 循环
-    // ralph 会自动处理 MAX_RETRY=5 的重试
+    // RalphEngine.start 会从 progressManager 取任务，逐个执行 developer→validator
+    // 任务队列只有一个，完成后自动退出
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error(`任务 ${task.id} 超时`)), 30 * 60 * 1000);
-      this.ralphEngine.startIsolated(taskSessionId, session, {
-        onDone: () => { clearTimeout(timeout); resolve(); },
-        onBlocked: (reason) => { clearTimeout(timeout); reject(new Error(reason)); },
+      const timeout = setTimeout(
+        () => reject(new Error(`任务 ${task.id} 超时（30分钟）`)),
+        30 * 60 * 1000
+      );
+
+      // 监听 ralph:state 事件判断完成/失败
+      const onState = ({ sessionId: sid, phase, running }) => {
+        if (sid !== taskSessionId) return;
+        if (!running && phase === 'done') {
+          clearTimeout(timeout);
+          this.io?.off('ralph:state', onState);
+          resolve();
+        } else if (!running && phase === 'stopped') {
+          clearTimeout(timeout);
+          this.io?.off('ralph:state', onState);
+          // 检查是否有被 blocked 的任务
+          const prog = progressManager.loadProgress(taskSessionId);
+          const blocked = prog?.features?.find(f => f.blocked);
+          if (blocked) {
+            reject(new Error(`任务 ${task.id} 验证失败超过最大重试次数`));
+          } else {
+            resolve();
+          }
+        }
+      };
+
+      this.io?.on('ralph:state', onState);
+
+      // 启动 ralph（非阻塞）
+      this.ralphEngine.start(taskSessionId, { maxIterations: 10 }).catch(err => {
+        clearTimeout(timeout);
+        this.io?.off('ralph:state', onState);
+        reject(err);
       });
     });
   }

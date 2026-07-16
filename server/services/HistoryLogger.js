@@ -18,6 +18,10 @@ export class HistoryLogger {
     }
 
     this.db = new Database(dbPath);
+    // WAL 模式：终端录制高频写入场景下避免锁表
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('busy_timeout = 5000');
+    this.db.pragma('synchronous = NORMAL');
     this._initTables();
   }
 

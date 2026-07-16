@@ -983,6 +983,10 @@ export class SessionManager {
   _initDb() {
     const dbPath = this._getDbPath();
     this.db = new Database(dbPath);
+    // WAL 模式：高频写入下减少锁竞争，显著提升并发性能
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('busy_timeout = 5000');
+    this.db.pragma('synchronous = NORMAL');
     console.log(`[SessionManager] 使用数据库: ${dbPath}`);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
