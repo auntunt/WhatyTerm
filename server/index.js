@@ -149,6 +149,7 @@ import ccSwitchAudit from './services/CCSwitchAudit.js';
 import configService from './services/ConfigService.js';
 import progressManager from './services/ProgressManager.js';
 import PlannerService from './services/PlannerService.js';
+import { DeliveryEngine } from './services/delivery/DeliveryEngine.js';
 import EvaluatorService from './services/EvaluatorService.js';
 // Ralph 自主开发：经公开壳 loader 加载付费闭源核心（缺失时优雅降级）
 import { RalphEngine, RALPH_CORE_PRESENT } from './services/ralph/loader.js';
@@ -898,6 +899,7 @@ const providerService = new ProviderService(io);
 const healthCheckScheduler = new HealthCheckScheduler(io);
 const scheduleManager = new ScheduleManager();
 let ralphEngine = null; // RalphEngine 自主模式引擎，在 SessionManager 初始化后创建
+let deliveryEngine = null; // DeliveryEngine 三层 loop 交付引擎
 let hookServer = null; // HookServer：Claude Code 官方 Hooks 集成
 
 // 异步初始化 SessionManager
@@ -911,6 +913,8 @@ let sessionManagerReady = false;
     loadProviderPriority();
     ralphEngine = new RalphEngine(sessionManager, io);
     console.log('[Server] RalphEngine 初始化完成');
+    deliveryEngine = new DeliveryEngine(sessionManager, ralphEngine, aiEngine, io);
+    console.log('[Server] DeliveryEngine 初始化完成');
     hookServer = new HookServer(currentPort);
     hookServer.install();
     _wireHookServer();
@@ -924,6 +928,7 @@ let sessionManagerReady = false;
     loadProviderPriority();
     ralphEngine = new RalphEngine(sessionManager, io);
     hookServer = new HookServer(currentPort);
+    deliveryEngine = new DeliveryEngine(sessionManager, ralphEngine, aiEngine, io);
     hookServer.install();
     _wireHookServer();
   }
@@ -4743,6 +4748,60 @@ io.on('connection', (socket) => {
   socket.on('progress:summary', (sessionId) => {
     const summary = progressManager.getSummary(sessionId);
     socket.emit('progress:summary', { sessionId, summary });
+  });
+
+  // ── DeliveryEngine：三层 loop 项目交付 ───────────────────────────
+
+  // Step 1: 检查需求是否需要澄清
+  socket.on('delivery:check_clarify', async ({ sessionId, requirement }) => {
+    const session = sessionManager?.getSession(sessionId);
+    if (!session) return socket.emit('delivery:error', { sessionId, error: '会话不存在' });
+    if (!deliveryEngine) return socket.emit('delivery:error', { sessionId, error: '引擎未就绪' });
+    try {
+      const result = await deliveryEngine.decomposer.checkClarification(
+        sessionId, requirement, session.workingDir
+      );
+      socket.emit('delivery:clarify_result', { sessionId, ...result });
+    } catch (err) {
+      socket.emit('delivery:error', { sessionId, error: err.message });
+    }
+  });
+
+  // Step 2: 启动交付流程（包含完整三层 loop）
+  socket.on('delivery:start', async ({ sessionId, requirement, clarification }) => {
+    const session = sessionManager?.getSession(sessionId);
+    if (!session) return socket.emit('delivery:error', { sessionId, error: '会话不存在' });
+    if (!deliveryEngine) return socket.emit('delivery:error', { sessionId, error: '引擎未就绪' });
+    if (deliveryEngine.isRunning(sessionId)) {
+      return socket.emit('delivery:state', { sessionId, running: true, phase: 'already_running' });
+    }
+    socket.emit('delivery:state', { sessionId, running: true, phase: 'starting' });
+    deliveryEngine.deliver(sessionId, {
+      requirement,
+      clarification: clarification || '',
+      workingDir: session.workingDir,
+      aiType: session.aiType || 'claude',
+      providerId: session.claudeProvider?.id,
+    }).catch(err => socket.emit('delivery:error', { sessionId, error: err.message }));
+  });
+
+  // 停止交付
+  socket.on('delivery:stop', ({ sessionId }) => {
+    deliveryEngine?.stop(sessionId);
+    socket.emit('delivery:state', { sessionId, running: false, phase: 'stopped' });
+  });
+
+  // 查询状态
+  socket.on('delivery:status', ({ sessionId }) => {
+    const running = deliveryEngine?.isRunning(sessionId) ?? false;
+    const plan = deliveryEngine?.decomposer?.loadDeliveryPlan(sessionId);
+    socket.emit('delivery:state', { sessionId, running, plan });
+  });
+
+  // 获取已保存的拆解计划
+  socket.on('delivery:get_plan', ({ sessionId }) => {
+    const plan = deliveryEngine?.decomposer?.loadDeliveryPlan(sessionId);
+    socket.emit('delivery:plan', { sessionId, plan });
   });
 
   // 获取关闭的会话列表
