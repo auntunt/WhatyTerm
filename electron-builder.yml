@@ -96,7 +96,7 @@ afterPack: scripts/rebuild-native.cjs
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns
-  identity: "Beijing Youxun Online Technolog Co., Ltd. (75JRAR2YKZ)"
+  identity: null
   notarize: false
   target:
     - target: dmg
@@ -154,8 +154,8 @@ linux:
       arch:
         - x64
 
-# 自动更新配置
+# 自动更新配置（指向自己的 GitHub 仓库）
 publish:
-  provider: generic
-  url: https://term.whaty.org/releases
-  channel: latest
+  provider: github
+  owner: auntunt
+  repo: WhatyTerm
