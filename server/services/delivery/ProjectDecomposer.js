@@ -50,16 +50,11 @@ export class ProjectDecomposer {
     return parts.join('\n\n');
   }
 
-  // ── LLM 调用（借用 AIEngine 的 provider 管理）────────────────────
+  // ── LLM 调用（通过 AIEngine 公共接口）────────────────────────────
   async _callLLM(sessionId, prompt, label) {
     this._log(sessionId, `[LLM] ${label}...`);
     try {
-      const result = await this.aiEngine.callProvider({
-        messages: [{ role: 'user', content: prompt }],
-        maxTokens: 4096,
-        sessionId,
-      });
-      return result?.content || result?.text || String(result || '');
+      return await this.aiEngine.callLLM(prompt, { maxTokens: 4096 });
     } catch (err) {
       this._log(sessionId, `[LLM] ${label} 失败: ${err.message}`);
       throw err;

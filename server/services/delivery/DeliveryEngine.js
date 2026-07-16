@@ -413,17 +413,10 @@ export class DeliveryEngine {
     }
   }
 
-  // ── 辅助：运行 headless prompt（借用 ralphEngine 的底层）─────────
+  // ── 辅助：运行 headless prompt（集成验证不需要写文件，只需 LLM 分析）─
   async _runHeadlessPrompt(sessionId, session, prompt, opts) {
-    // RalphEngine 的 _execHeadless 是内部方法，通过 ProgressManager 桥接
-    // 这里直接用 AIEngine 调用（集成验证不需要写文件，只需要 LLM 分析）
     try {
-      const result = await this.aiEngine.callProvider({
-        messages: [{ role: 'user', content: prompt }],
-        maxTokens: 2048,
-        sessionId,
-      });
-      return result?.content || result?.text || String(result || '');
+      return await this.aiEngine.callLLM(prompt, { maxTokens: 2048 });
     } catch (err) {
       this._log(sessionId, `headless prompt 失败: ${err.message}`);
       return null;

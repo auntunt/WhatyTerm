@@ -884,8 +884,6 @@ export class AIEngine {
     if (!config.apiUrl || !config.apiKey) {
       throw new Error('Claude API 未配置，请先在 ccswitch 中添加供应商');
     }
-
-    // Claude 列表里的服务器统一使用伪装模式
     console.log('[AIEngine] 使用 Claude Code 伪装模式');
 
     // 获取要尝试的模型列表
@@ -3024,5 +3022,26 @@ ${errorContent}
       shouldAutoFix: true,
       autoFixAction: 'wait_and_retry'
     };
+  }
+
+  /**
+   * 公共 LLM 调用接口，供 DeliveryEngine / ProjectDecomposer 等外部模块使用。
+   * 自动选取当前配置的 provider，返回纯文本内容。
+   * @param {string} prompt
+   * @param {object} [opts]
+   * @param {number} [opts.maxTokens=4096]
+   * @returns {Promise<string>}
+   */
+  async callLLM(prompt, { maxTokens = 4096 } = {}) {
+    const config = this._loadSettings();
+    if (!config.apiUrl || !config.apiKey) {
+      throw new Error('[AIEngine] LLM 未配置，请先在 ccswitch 中添加供应商');
+    }
+    const result = await this._callClaudeApiWithModel(
+      prompt,
+      { ...config, maxTokens },
+      config.model || DEFAULT_MODEL
+    );
+    return typeof result === 'string' ? result : (result?.content ?? '');
   }
 }
