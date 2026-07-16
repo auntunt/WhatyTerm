@@ -98,6 +98,8 @@ mac:
   icon: build/icon.icns
   identity: null
   notarize: false
+  hardenedRuntime: false
+  gatekeeperAssess: false
   target:
     - target: dmg
       arch:
@@ -107,10 +109,6 @@ mac:
       arch:
         - x64
         - arm64
-  hardenedRuntime: true
-  gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
 
 dmg:
   contents:
