@@ -1262,33 +1262,8 @@ async function tryAutoSwitchProvider(session, sessionData, status) {
 
 // 认证中间件
 const authMiddleware = (req, res, next) => {
-  // 登录相关路由不需要认证
-  if (req.path === '/api/auth/login' ||
-      req.path === '/api/auth/status' ||
-      req.path === '/api/auth/logout') {
-    return next();
-  }
-
-  // 本机访问自动放行
-  if (isLocalRequest(req)) {
-    return next();
-  }
-
-  // 远程访问：如果未设置密码，禁止访问
-  if (!authService.isAuthRequired()) {
-    return res.status(403).json({
-      error: '请到本机设置管理员密码后再远程访问',
-      requirePasswordSetup: true
-    });
-  }
-
-  // 远程访问：检查 session
-  if (req.session && req.session.authenticated) {
-    return next();
-  }
-
-  // 未认证
-  res.status(401).json({ error: '需要登录', requireAuth: true });
+  // 认证已禁用，直接放行所有请求
+  return next();
 };
 
 // 认证 API 路由

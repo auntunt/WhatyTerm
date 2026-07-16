@@ -730,13 +730,30 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   } else {
     writeLog('[Electron] 生产模式，等待服务器启动...');
-    waitForServer('http://localhost:3928', 30000).then(() => {
+    waitForServer('http://localhost:3928', 60000).then(() => {
       writeLog('[Electron] 服务器已就绪，加载 http://localhost:3928');
       mainWindow.loadURL('http://localhost:3928');
     }).catch((err) => {
       writeLog(`[Electron] 服务器启动超时: ${err.message}`);
-      dialog.showErrorBox('服务器启动失败', '无法连接到 WhatyTerm 服务器，请检查日志。');
-      app.quit();
+      const logDir = getLogPath();
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: '服务器启动失败',
+        message: '无法连接到 WhatyTerm 后端服务',
+        detail: `请检查日志文件：\n${logDir}\n\n可能原因：\n• 端口 3928 被占用\n• 系统缺少 tmux（macOS 请先安装 Homebrew 和 tmux）\n• 防火墙或安全软件阻止了连接\n\n点击"重试"尝试再次连接，或点击"退出"关闭应用。`,
+        buttons: ['重试', '退出'],
+        defaultId: 0,
+        cancelId: 1
+      }).then(({ response }) => {
+        if (response === 0) {
+          // 重试：再等 60 秒
+          waitForServer('http://localhost:3928', 60000).then(() => {
+            mainWindow.loadURL('http://localhost:3928');
+          }).catch(() => app.quit());
+        } else {
+          app.quit();
+        }
+      });
     });
   }
 

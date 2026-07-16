@@ -10,19 +10,12 @@ export function createAuthRouter({ authService, isLocalRequest }) {
 
   // GET /status → 原 GET /api/auth/status
   router.get('/status', (req, res) => {
-    const status = authService.getStatus();
-    const isLocal = isLocalRequest(req);
-    const passwordNotSet = !authService.isAuthRequired();
-
-    // 远程访问 + 未设置密码 = 需要先在本机设置密码
-    const requirePasswordSetup = !isLocal && passwordNotSet;
-
+    // 认证已禁用，始终返回已认证状态
     res.json({
-      ...status,
-      isLocal,
-      requirePasswordSetup,
-      // 本机访问视为已认证；远程访问且未设置密码则未认证
-      authenticated: isLocal || (!requirePasswordSetup && req.session?.authenticated) || false
+      enabled: false,
+      authenticated: true,
+      isLocal: true,
+      requirePasswordSetup: false,
     });
   });
 

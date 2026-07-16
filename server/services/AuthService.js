@@ -11,9 +11,9 @@ const AUTH_SETTINGS_PATH = join(__dirname, '../db/auth-settings.json');
 const SUBSCRIPTION_SERVER = process.env.SUBSCRIPTION_SERVER || 'https://term.whaty.org';
 
 const DEFAULT_SETTINGS = {
-  enabled: false,
+  enabled: false,  // 认证永久禁用
   username: 'admin',
-  passwordHash: null  // bcrypt 或 sha256 哈希
+  passwordHash: null
 };
 
 export class AuthService {
@@ -162,9 +162,9 @@ export class AuthService {
     };
   }
 
-  // 检查是否需要认证
+  // 检查是否需要认证（永久禁用）
   isAuthRequired() {
-    return this.settings.enabled && this.settings.passwordHash !== null;
+    return false;
   }
 
   // 生成会话令牌
