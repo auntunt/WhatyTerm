@@ -235,6 +235,16 @@ function extractBundledTmux() {
     fs.copyFileSync(bundledPath, WEBTMUX_TMUX_PATH);
     fs.chmodSync(WEBTMUX_TMUX_PATH, 0o755);
 
+    // macOS：去掉 Gatekeeper 隔离标记，否则从 app bundle 释放的二进制会被阻止运行
+    if (process.platform === 'darwin') {
+      try {
+        execSync(`xattr -d com.apple.quarantine "${WEBTMUX_TMUX_PATH}"`, { stdio: 'pipe' });
+        console.log(`[tmux] 已清除隔离标记`);
+      } catch {
+        // xattr 失败不影响继续（文件可能本来就没有隔离标记）
+      }
+    }
+
     // 验证
     execSync(`"${WEBTMUX_TMUX_PATH}" -V`, { stdio: 'pipe' });
     console.log(`内置 tmux 释放成功: ${WEBTMUX_TMUX_PATH}`);
@@ -491,7 +501,33 @@ async function showMacDependencyDialog() {
   // 尝试释放内置 tmux（秒级完成）
   if (extractBundledTmux()) return true;
 
-  // 内置 tmux 不可用，fallback 到 Homebrew
+  // 内置 tmux 释放失败或被 Gatekeeper 拦截：给出精确提示
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    title: '需要安装 tmux',
+    message: 'WhatyTerm 需要 tmux 才能运行',
+    detail: [
+      '内置 tmux 无法启动，可能原因：',
+      '',
+      '1. macOS Gatekeeper 拦截（最常见）',
+      '   在终端运行以下命令解除：',
+      `   sudo xattr -dr com.apple.quarantine /Applications/WhatyTerm.app`,
+      '   然后重启应用。',
+      '',
+      '2. 或者通过 Homebrew 安装系统级 tmux：',
+      '   brew install tmux',
+    ].join('\n'),
+    buttons: ['通过 Homebrew 安装', '退出'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+
+  if (response === 1) {
+    app.quit();
+    return false;
+  }
+
+  // 用户选择通过 Homebrew 安装
   const progressWindow = showProgressWindow('正在准备环境...', '检测系统依赖');
 
   try {
