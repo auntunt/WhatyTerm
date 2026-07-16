@@ -23,6 +23,11 @@ export class HistoryLogger {
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('synchronous = NORMAL');
     this._initTables();
+    // 缓存高频 INSERT 语句，避免每次 log() 都重新 prepare
+    this._insertStmt = this.db.prepare(`
+      INSERT INTO history (id, session_id, type, content, ai_generated, ai_reasoning)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
   }
 
   _initTables() {
@@ -54,12 +59,7 @@ export class HistoryLogger {
   }
 
   log(sessionId, entry) {
-    const stmt = this.db.prepare(`
-      INSERT INTO history (id, session_id, type, content, ai_generated, ai_reasoning)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
-    stmt.run(
+    this._insertStmt.run(
       uuidv4(),
       sessionId,
       entry.type,
@@ -157,23 +157,31 @@ export class HistoryLogger {
 
   // 清理超过指定天数的旧历史记录
   cleanOldHistory(daysToKeep = 7) {
+    const days = parseInt(daysToKeep, 10);
+    if (!Number.isInteger(days) || days <= 0) {
+      throw new Error(`cleanOldHistory: daysToKeep 必须是正整数，收到: ${daysToKeep}`);
+    }
     const stmt = this.db.prepare(`
       DELETE FROM history
       WHERE datetime(created_at) < datetime('now', '-' || ? || ' days')
     `);
-    const result = stmt.run(daysToKeep);
+    const result = stmt.run(days);
     return result.changes;
   }
 
   // 清理超过指定天数的输出记录（output 类型）
   // output 记录量大，需要更频繁地清理
   cleanOldOutputs(daysToKeep = 1) {
+    const days = parseInt(daysToKeep, 10);
+    if (!Number.isInteger(days) || days <= 0) {
+      throw new Error(`cleanOldOutputs: daysToKeep 必须是正整数，收到: ${daysToKeep}`);
+    }
     const stmt = this.db.prepare(`
       DELETE FROM history
       WHERE type = 'output'
       AND datetime(created_at) < datetime('now', '-' || ? || ' days')
     `);
-    const result = stmt.run(daysToKeep);
+    const result = stmt.run(days);
     return result.changes;
   }
 

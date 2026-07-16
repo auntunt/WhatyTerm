@@ -80,7 +80,7 @@ const DANGEROUS_PATTERNS = [
   /^chmod\s+777/,
   /^dd\s+/,
   />\s*\/dev\//,
-  /^reboot|shutdown|halt/,
+  /^(reboot|shutdown|halt)(\s|$)/i,
   /^kill\s+-9/,
   /^mkfs/,
   /^:(){ :|:& };:/,
@@ -860,7 +860,15 @@ export class AIEngine {
     // 设置 dispatcher：优先使用代理，否则使用忽略 SSL 验证的 Agent
     fetchOptions.dispatcher = proxyAgent || insecureAgent;
 
-    const response = await fetch(config.apiUrl, fetchOptions);
+    const abortControllerOpenAi = new AbortController();
+    const abortTimeoutOpenAi = setTimeout(() => abortControllerOpenAi.abort(), 60000);
+    fetchOptions.signal = abortControllerOpenAi.signal;
+    let response;
+    try {
+      response = await fetch(config.apiUrl, fetchOptions);
+    } finally {
+      clearTimeout(abortTimeoutOpenAi);
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -990,7 +998,15 @@ export class AIEngine {
     fetchOptions.dispatcher = proxyAgent || insecureAgent;
 
     console.log(`[AIEngine] 调用 Claude API，模型: ${model}`);
-    const response = await fetch(config.apiUrl, fetchOptions);
+    const abortControllerClaude = new AbortController();
+    const abortTimeoutClaude = setTimeout(() => abortControllerClaude.abort(), 60000);
+    fetchOptions.signal = abortControllerClaude.signal;
+    let response;
+    try {
+      response = await fetch(config.apiUrl, fetchOptions);
+    } finally {
+      clearTimeout(abortTimeoutClaude);
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -998,6 +1014,10 @@ export class AIEngine {
     }
 
     const data = await response.json();
+    // 检查 stop_reason，截断时发出警告
+    if (data.stop_reason && data.stop_reason === 'max_tokens') {
+      console.warn('[AIEngine] Claude API 响应被截断 (stop_reason: max_tokens)，建议增大 maxTokens 配置');
+    }
     // 返回包含 text 和 usage 的对象
     return {
       text: data.content?.[0]?.text || null,
@@ -1181,13 +1201,21 @@ export class AIEngine {
     console.log(`[AIEngine] 调用 Gemini API: ${model}`);
 
     try {
-      const response = await fetch(urlWithKey, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
+      const abortControllerGemini = new AbortController();
+      const abortTimeoutGemini = setTimeout(() => abortControllerGemini.abort(), 60000);
+      let response;
+      try {
+        response = await fetch(urlWithKey, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody),
+          signal: abortControllerGemini.signal
+        });
+      } finally {
+        clearTimeout(abortTimeoutGemini);
+      }
 
       const responseText = await response.text();
 
@@ -1205,6 +1233,12 @@ export class AIEngine {
           .filter(p => p.text)
           .map(p => p.text)
           .join('');
+      }
+
+      // 检查 finishReason，截断时发出警告
+      const finishReason = data.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason === 'MAX_TOKENS') {
+        console.warn('[AIEngine] Gemini API 响应被截断 (finishReason: MAX_TOKENS)，建议增大 maxTokens 配置');
       }
 
       // 提取 usage 信息
@@ -2916,15 +2950,17 @@ ${this._buildProgressContext(projectContext)}
    * 并发控制包装器
    */
   _withConcurrencyLimit(fn) {
+    const MAX_QUEUE = 50;
     return new Promise((resolve, reject) => {
       const run = async () => {
-        this._aiConcurrency++;
         try {
           resolve(await fn());
         } catch (err) {
           reject(err);
         } finally {
-          this._aiConcurrency--;
+          if (this._aiConcurrency > 0) {
+            this._aiConcurrency--;
+          }
           if (this._aiQueue.length > 0) {
             const next = this._aiQueue.shift();
             next();
@@ -2933,9 +2969,16 @@ ${this._buildProgressContext(projectContext)}
       };
 
       if (this._aiConcurrency < this._aiMaxConcurrency) {
+        this._aiConcurrency++;
         run();
       } else {
-        this._aiQueue.push(run);
+        if (this._aiQueue.length >= MAX_QUEUE) {
+          return reject(new Error('AI 请求队列已满（上限 50），请稍后重试'));
+        }
+        this._aiQueue.push(() => {
+          this._aiConcurrency++;
+          run();
+        });
       }
     });
   }

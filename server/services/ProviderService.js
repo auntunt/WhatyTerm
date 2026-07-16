@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -231,7 +232,9 @@ export class ProviderService {
    */
   _writeProviders(data) {
     try {
-      fs.writeFileSync(this.providersFile, JSON.stringify(data, null, 2), 'utf8');
+      const tmp = this.providersFile + '.tmp.' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(tmp, this.providersFile);
       return true;
     } catch (error) {
       console.error('[ProviderService] 写入 providers.json 失败:', error);
@@ -257,7 +260,9 @@ export class ProviderService {
    */
   _writeEndpoints(data) {
     try {
-      fs.writeFileSync(this.endpointsFile, JSON.stringify(data, null, 2), 'utf8');
+      const tmp = this.endpointsFile + '.tmp.' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(tmp, this.endpointsFile);
       return true;
     } catch (error) {
       console.error('[ProviderService] 写入 provider-endpoints.json 失败:', error);
@@ -332,7 +337,7 @@ export class ProviderService {
 
     // 自动生成 ID（如果未提供）
     if (!provider.id) {
-      provider.id = `provider-${Date.now()}`;
+      provider.id = `provider-${crypto.randomUUID()}`;
     }
 
     // 设置 appType 和创建时间

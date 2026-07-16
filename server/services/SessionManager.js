@@ -354,8 +354,7 @@ export class Session {
           if (this.outputBuffer.length > 100000) {
             this.outputBuffer = this.outputBuffer.slice(-50000);
           }
-          this.outputCallbacks.forEach(cb => cb(data));
-
+          [...this.outputCallbacks].forEach(cb => cb(data));
           // 检测 bell 字符（\x07）- Claude Code 需要用户输入时会发送
           if (data.includes('\x07')) {
             this.bellCallbacks.forEach(cb => cb());
@@ -410,7 +409,7 @@ export class Session {
         if (this.outputBuffer.length > 100000) {
           this.outputBuffer = this.outputBuffer.slice(-50000);
         }
-        this.outputCallbacks.forEach(cb => cb(data));
+        [...this.outputCallbacks].forEach(cb => cb(data));
 
         // 检测 bell 字符（\x07）- Claude Code 需要用户输入时会发送
         if (data.includes('\x07')) {
@@ -837,6 +836,9 @@ export class Session {
     }
     // 清理回调
     this.outputCallbacks = [];
+    this.bellCallbacks = [];
+    this.exitCallbacks = [];
+    this.projectChangeCallbacks = [];
     // 不删除 tmux session，保留以便恢复
   }
 
@@ -1927,7 +1929,7 @@ export class SessionManager {
       // tmux 模式：检查 tmux 会话是否还存在
       let tmuxExists = false;
       try {
-        execSync(`${getTmuxPrefix()} has-session -t ${closedSession.tmuxSessionName}`, { stdio: 'pipe' });
+        execSync(`${getTmuxPrefix()} has-session -t "${closedSession.tmuxSessionName}"`, { stdio: 'pipe' });
         tmuxExists = true;
       } catch {
         tmuxExists = false;
@@ -2012,7 +2014,7 @@ export class SessionManager {
       for (const row of rows) {
         let tmuxExists = false;
         try {
-          execSync(`${getTmuxPrefix()} has-session -t ${row.tmux_session_name}`, { stdio: 'pipe' });
+          execSync(`${getTmuxPrefix()} has-session -t "${row.tmux_session_name}"`, { stdio: 'pipe' });
           tmuxExists = true;
         } catch {
           tmuxExists = false;

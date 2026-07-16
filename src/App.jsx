@@ -524,15 +524,16 @@ export default function App() {
       .catch(err => console.error('加载订阅状态失败:', err));
 
     // 监听 Cloudflare Tunnel 连接事件（自动获取免费域名）
-    socket.on('tunnel:connected', (data) => {
+    const onTunnelConnected = (data) => {
       console.log('[Tunnel] 已连接:', data.url);
       setTunnelUrl(data.url);
-    });
-
-    socket.on('tunnel:disconnected', () => {
+    };
+    const onTunnelDisconnected = () => {
       console.log('[Tunnel] 已断开');
       setTunnelUrl('');
-    });
+    };
+    socket.on('tunnel:connected', onTunnelConnected);
+    socket.on('tunnel:disconnected', onTunnelDisconnected);
 
     // 加载历史 AI 操作日志
     fetch('/api/ai-logs?limit=500')
@@ -554,17 +555,19 @@ export default function App() {
 
     return () => {
       socket.off('settings:loaded');
+      socket.off('tunnel:connected', onTunnelConnected);
+      socket.off('tunnel:disconnected', onTunnelDisconnected);
     };
   }, []);
 
-  // 添加调试日志的辅助函数（保留所有日志）
+  // 添加调试日志的辅助函数（最多保留最近 500 条，防止无限增长）
   const addDebugLog = useCallback((type, data) => {
     setAiDebugLogs(prev => [...prev, {
       id: Date.now(),
       time: new Date().toLocaleTimeString(),
       type,
       data
-    }]);
+    }].slice(-500));
   }, []);
 
   // 切换后台自动操作开关
