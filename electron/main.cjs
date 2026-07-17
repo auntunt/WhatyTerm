@@ -759,13 +759,20 @@ function createWindow() {
     writeLog('[Electron] 窗口变为无响应状态');
   });
 
-  // 开发模式连接 Vite 开发服务器，生产模式加载本地服务器
-  if (isDev) {
-    writeLog('[Electron] 开发模式，加载 http://localhost:5173');
-    mainWindow.loadURL('http://localhost:5173');
+  // 加载页面：
+  // - 默认（含开发模式）都加载本地 server(3928) 提供的静态页。server 由 startServer()
+  //   无条件启动，且已 serve 前端 dist/，所以 `npm run build && npm run electron:dev` 即可用，
+  //   无需单独起 vite，避免白屏（原开发模式硬编码 5173，但 vite 实际跑在 5050 且 electron:dev
+  //   不会启动 vite —— 会白屏）。
+  // - 想要 vite 热更新时：先 `npm run client:dev`（起 5050），再设 WHATYTERM_VITE=1 启动 electron。
+  const useVite = process.env.WHATYTERM_VITE === '1';
+  if (useVite) {
+    writeLog('[Electron] 开发模式(vite)，加载 http://localhost:5050');
+    mainWindow.loadURL('http://localhost:5050');
     mainWindow.webContents.openDevTools();
   } else {
-    writeLog('[Electron] 生产模式，等待服务器启动...');
+    writeLog('[Electron] 等待服务器启动...');
+    if (isDev) mainWindow.webContents.openDevTools();
     waitForServer('http://localhost:3928', 60000).then(() => {
       writeLog('[Electron] 服务器已就绪，加载 http://localhost:3928');
       mainWindow.loadURL('http://localhost:3928');

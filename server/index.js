@@ -747,12 +747,17 @@ app.use('/api/', apiLimiter);                     // 其余 API：每分钟 120 
 
 // ── Claude Code 官方 Hooks 接收端点 ──────────────────────────────
 // ── Hooks 路由 ────────────────────────────────────────────
-const hookRouter = createHookRouter({ hookServer, sessionManager, isLocalRequest });
+// hookServer 在下方异步初始化（let 声明于后、SessionManager 就绪后实例化），
+// 这里用 getter 惰性传入，避免路由构造时命中 TDZ（Cannot access 'hookServer' before initialization）
+const hookRouter = createHookRouter({ getHookServer: () => hookServer, isLocalRequest });
 app.use('/hooks', hookRouter);
 
 // ── Session 分析路由 ───────────────────────────────────────
+// sessionManager / aiEngine / hookServer 均在下方（声明于后、异步实例化）就绪，
+// 全部用 getter 惰性传入，避免路由构造时命中 TDZ。
 const sessionAnalyzeRouter = createSessionAnalyzeRouter({
-  sessionManager, aiEngine, hookServer, progressManager
+  getSessionManager: () => sessionManager, getAiEngine: () => aiEngine,
+  getHookServer: () => hookServer, progressManager
 });
 app.use('/api/sessions', sessionAnalyzeRouter);
 

@@ -547,11 +547,15 @@ class SubscriptionService {
   }
 
   /**
-   * Ralph 自主开发模式是否可用（付费功能）
+   * Ralph 自主开发模式是否可用
+   *
+   * 本地自用 harness：自主开发（Ralph 三层 loop / DeliveryEngine）核心代码已完整
+   * 存在于本仓库，此处解除付费门槛，对本地完全开放。
+   * 原逻辑为 `return this.licenseValid === true`（需有效 license）。
    * @returns {boolean}
    */
   isRalphAvailable() {
-    return this.licenseValid === true;
+    return true;
   }
 
   /**

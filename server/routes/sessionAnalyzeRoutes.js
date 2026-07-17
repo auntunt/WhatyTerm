@@ -2,18 +2,21 @@ import { Router } from 'express';
 
 /**
  * createSessionAnalyzeRouter
- * @param {{ sessionManager, aiEngine, hookServer, progressManager }} deps
+ * @param {{ sessionManager, aiEngine, getHookServer, progressManager }} deps
+ *   getHookServer: 惰性获取 hookServer 实例（构造时 hookServer 尚未初始化，避免 TDZ）
  * @returns {Router}
  */
-export function createSessionAnalyzeRouter({ sessionManager, aiEngine, hookServer, progressManager }) {
+export function createSessionAnalyzeRouter({ getSessionManager, getAiEngine, getHookServer, progressManager }) {
   const router = Router();
 
   // GET /api/sessions/:sessionId/hook-activity  →  router.get('/:sessionId/hook-activity')
   router.get('/:sessionId/hook-activity', (req, res) => {
+    const sessionManager = getSessionManager();
     const session = sessionManager.getSession(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'session not found' });
 
     const workingDir = session.workingDir || '';
+    const hookServer = getHookServer();
     const rawLog = hookServer ? hookServer.recentLogs(100) : '';
     const lines = rawLog.split('\n').filter(Boolean);
 
@@ -86,6 +89,8 @@ export function createSessionAnalyzeRouter({ sessionManager, aiEngine, hookServe
   // POST /api/sessions/:sessionId/analyze-now  →  router.post('/:sessionId/analyze-now')
   router.post('/:sessionId/analyze-now', async (req, res) => {
     try {
+      const sessionManager = getSessionManager();
+      const aiEngine = getAiEngine();
       const session = sessionManager?.getSession(req.params.sessionId);
       if (!session) return res.status(404).json({ error: 'session not found' });
 

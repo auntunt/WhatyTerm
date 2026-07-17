@@ -2,14 +2,17 @@ import { Router } from 'express';
 
 /**
  * createHookRouter
- * @param {{ hookServer, sessionManager, isLocalRequest }} deps
+ * @param {{ getHookServer, isLocalRequest }} deps
+ *   getHookServer: 惰性获取 hookServer 实例（路由在服务器 index.js 顶层构造时，
+ *   hookServer 尚未初始化，故用 getter 在请求时读取当时的值，避免 TDZ）
  * @returns {Router}
  */
-export function createHookRouter({ hookServer, sessionManager, isLocalRequest }) {
+export function createHookRouter({ getHookServer, isLocalRequest }) {
   const router = Router();
 
   // POST /hooks  →  router.post('/')
   router.post('/', (req, res) => {
+    const hookServer = getHookServer();
     if (!hookServer?.validateToken(req.headers['x-webtmuxtoken'])) {
       return res.status(403).end();
     }
@@ -40,6 +43,7 @@ export function createHookRouter({ hookServer, sessionManager, isLocalRequest })
 
   // GET /hooks/status  →  router.get('/status')
   router.get('/status', (req, res) => {
+    const hookServer = getHookServer();
     if (!hookServer) return res.json({ status: 'not_initialized' });
     const logs = hookServer.recentLogs(50);
     const scriptPath = `${process.env.HOME}/.webtmux/hooks/pre-tool.sh`;

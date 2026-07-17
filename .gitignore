@@ -4,6 +4,8 @@ dist/
 *.log
 server/db/*.json
 server/db/*.db
+server/db/*.db-shm
+server/db/*.db-wal
 release/
 *.dmg
 *.exe

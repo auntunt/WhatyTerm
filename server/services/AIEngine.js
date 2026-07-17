@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { ProxyAgent, Agent } from 'undici';
 import Database from 'better-sqlite3';
 import ProviderService from './ProviderService.js';
@@ -2832,6 +2832,24 @@ ${this._buildProgressContext(projectContext)}
    */
   _resolveCliExe(aiType = 'claude') {
     const home = os.homedir();
+
+    // 1) 优先用用户 login shell 的 PATH 解析（nvm/asdf 等版本管理器装的 CLI 只在
+    //    login shell PATH 里，硬编码路径列表覆盖不到；且 GUI 启动的 Electron 继承的
+    //    PATH 常缺这些目录）。这样能拿到用户实际在用的那个可执行文件。
+    try {
+      const shell = process.env.SHELL || '/bin/zsh';
+      const r = spawnSync(shell, ['-lic', `command -v ${aiType}`], { encoding: 'utf-8', timeout: 5000 });
+      const resolved = (r.stdout || '').trim().split('\n').filter(Boolean).pop();
+      if (resolved && resolved.startsWith('/') && fs.existsSync(resolved)) {
+        if (!this._cliExeLogged?.[aiType]) {
+          console.log(`[AIEngine] CLI 解析(${aiType}) via PATH: ${resolved}`);
+          (this._cliExeLogged ||= {})[aiType] = true;
+        }
+        return resolved;
+      }
+    } catch {}
+
+    // 2) 回退：常见硬编码安装路径
     const map = {
       claude: [join(home, '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude', join(home, '.claude/local/claude')],
       codex: [join(home, '.local/bin/codex'), '/opt/homebrew/bin/codex', '/usr/local/bin/codex'],
