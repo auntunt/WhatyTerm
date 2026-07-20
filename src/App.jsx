@@ -19,6 +19,7 @@ import ProviderManager from './components/ProviderManager/ProviderManager';
 import ClaudeConfigManager from './components/ClaudeConfigManager';
 import VoiceInput from './components/VoiceInput';
 import SprintProgress from './components/SprintProgress';
+import DeliveryPanel from './components/DeliveryPanel';
 import RalphWizard from './components/RalphWizard';
 
 const socket = io();
@@ -1609,6 +1610,9 @@ export default function App() {
 
             {/* Harness Sprint 进度面板 */}
             {currentSession && <SprintProgress socket={socket} sessionId={currentSession.id} goal={currentSession.goal} />}
+
+            {/* DeliveryEngine 三层交付面板（macro/meso/micro） */}
+            {currentSession && <DeliveryPanel socket={socket} sessionId={currentSession.id} />}
 
           </div>
         ) : (
