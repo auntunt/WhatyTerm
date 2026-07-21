@@ -24,3 +24,11 @@ CLAUDE.md
 **/.env
 
 .claude/scheduled_tasks.lock
+
+# LaTeX 编译中间产物
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.out
+paper/*.log
+paper/*.toc
