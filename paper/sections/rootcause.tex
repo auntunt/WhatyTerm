@@ -1,0 +1,70 @@
+\section{根因分析：规则层为何吞噬了智能}
+\label{sec:rootcause}
+
+\S\ref{sec:reality} 的现象需要一个机制层面的解释：为什么 LLM 兜底层永不触发？为什么系统满足于反复“继续”？本节回到代码，给出确切答案，并将其抽象为一个可推广的反模式。
+
+\subsection{“检测到提示符即继续”的无条件路径}
+
+决策的核心入口先调用规则层 \texttt{preAnalyzeStatus}，仅当其返回空时才回退到 LLM。问题的关键在于：规则层对“空闲”这一\emph{最高频}状态，给出了一条无条件的、必定返回非空的判定路径。
+
+具体而言，通用领域插件的状态机在识别到终端存在空闲提示符（形如行首的 \texttt{❯} 或 \texttt{>}）且不处于运行中时，将阶段判定为 \texttt{waiting}，并直接返回一个固定动作：
+\begin{lstlisting}[language=]
+// phase === 'waiting'
+{ needsAction: true,
+  actionType: 'text_input',
+  suggestedAction: '继续',
+  message: '检测到等待输入状态,发送"继续"指令' }
+\end{lstlisting}
+这条路径的判定条件仅是“存在空闲提示符”这一\emph{纯语法信号}，与“代理上一步做了什么、这一步该做什么、继续是否有意义”\emph{完全无关}。由于长程任务中“代理停在空闲提示符”是压倒性的高频状态，这条路径几乎在每一个决策时刻都被命中并返回非空结果——于是控制流\textbf{永远不会走到那个 \texttt{return null}}，LLM 兜底层因此永远得不到调用的机会。
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+    font=\scriptsize,
+    node distance=5mm,
+    box/.style={draw,rounded corners=2pt,align=center,minimum height=7mm,inner sep=3pt,fill=blue!5},
+    dec/.style={draw,diamond,aspect=2.2,align=center,inner sep=1pt,fill=yellow!12},
+    dead/.style={draw,rounded corners=2pt,align=center,minimum height=7mm,inner sep=3pt,fill=red!8,dashed},
+    fl/.style={-{Stealth}},
+    lbl/.style={font=\tiny}
+  ]
+    \node[box] (screen) {终端屏幕文本};
+    \node[dec,below=of screen] (idle) {有空闲\\提示符?};
+    \node[box,right=14mm of idle,fill=green!8] (cont) {发送\\“继续”};
+    \node[dec,below=8mm of idle] (other) {其他规则\\命中?};
+    \node[box,left=10mm of other,fill=green!8] (act) {对应动作};
+    \node[dead,below=9mm of other] (llm) {回退 LLM\\兜底判断};
+
+    \draw[fl] (screen) -- (idle);
+    \draw[fl] (idle) -- node[above,lbl]{是（高频）} (cont);
+    \draw[fl] (idle) -- node[right,lbl]{否} (other);
+    \draw[fl] (other) -- node[above,lbl]{是} (act);
+    \draw[fl,red!60,dashed] (other) -- node[right,lbl,text=red!70]{否 → 理论路径} (llm);
+    % 反馈回路：继续后又回到空闲
+    \draw[fl,gray] (cont.north) to[out=90,in=0] node[right,lbl,text=black!55]{代理回“好的”后又空闲} (screen.east);
+  \end{tikzpicture}
+  \caption{决策控制流。空闲提示符是长程任务中的压倒性高频状态，“是”分支几乎每次命中并发送“继续”；代理敷衍回应后重新空闲，形成灰色反馈回路。红色虚线的 LLM 回退路径在实测中从未被走到。}
+  \label{fig:flow}
+\end{figure}
+
+图~\ref{fig:flow} 刻画了这一控制流。系统确实内置了少量“更聪明”的空闲子判定：例如识别代理明确输出“待命中/需要具体任务”时停手（避免“继续→待命→继续”死循环），或识别“列出多个下一步方向”时回复“按建议顺序继续”。但这些都是\emph{更窄的正则特判}，命中后同样在规则层内闭环返回，并不构成向 LLM 的移交。它们扩充了规则层的“聪明程度”，却没有改变“规则层垄断决策、LLM 永不介入”的结构。
+
+\subsection{缺失的一环：动作有效性反馈}
+
+更深层的缺陷是：规则层发出“继续”后，\textbf{没有任何机制评估这一动作是否真正推进了任务}。系统只观察“屏幕是否回到空闲提示符”，而这在“继续”无效时同样成立——代理回一句“好的，我继续”然后又停下，屏幕状态与真正干活后停下\emph{无法区分}。缺少“任务推进度”这一反馈信号，系统就无法察觉自己陷入了空转，也就没有任何触发条件把决策权上交给能理解语义的 LLM。
+
+形式化地说，理想的分层决策应满足一个\emph{移交条件}：当规则层的动作在连续 $k$ 次后未带来可观测的任务进展时，应强制回退到 LLM 层重新判断。而现有实现的移交条件恒为假——规则层对高频状态总有一个自信的、语法驱动的答案，从不承认“我不确定”。
+
+\subsection{一个可推广的反模式}
+
+我们将这一现象抽象为自主代理 harness 设计中的\textbf{“廉价层垄断”反模式}：
+
+\begin{quote}\itshape
+当一个分层决策系统把高频状态的最终决定权交给廉价的规则层，且规则层的判定基于纯语法信号、缺乏动作有效性的反馈时，昂贵但智能的推理层将被系统性地饿死；系统会稳定收敛到“高命中率、低有效性”的空转，且因不报错而难以被察觉。
+\end{quote}
+
+这一反模式的隐蔽性在于其\emph{指标伪装}：规则命中率 $\rho$、决策延迟、Token 成本等常规指标全都“表现优异”（$\rho$ 高、延迟低、成本近零），恰恰因为系统根本没在做有意义的工作。任何仅依赖这些效率指标的评估都会给出“系统运行良好”的错误结论——这也是为什么 \S\ref{sec:eval} 必须引入\emph{任务推进度}这类有效性指标，而非仅看效率指标。
+
+\subsection{修复方向}
+
+根因清晰后，修复方向也随之明确（详见 \S\ref{sec:discussion}）：其一，为“继续”类动作引入有效性反馈，例如比对动作前后屏幕内容的实质变化、或利用 Hook 事件确认代理确实发起了新的工具调用；其二，设定规则层向 LLM 层的强制移交条件，如“连续 $k$ 次继续未见新工具调用”即上交；其三，区分“语法空闲”与“语义空闲”——前者仅说明有提示符，后者才说明代理确实无事可做。这些改动的共同目标，是打破规则层对决策权的垄断，让推理层在真正需要时得以介入。

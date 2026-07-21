@@ -1,0 +1,58 @@
+\section{系统架构}
+\label{sec:arch}
+
+WhatyTerm 采用分层架构，自底向上依次为：执行/会话层、感知层、决策层、编排层与前端。图~\ref{fig:arch} 给出总体结构。本节先概述各层职责与数据流，再重点阐述作为系统基础的\emph{三通道感知}设计。
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+    font=\scriptsize,
+    layer/.style={draw,rounded corners=2pt,minimum width=0.9\columnwidth,minimum height=8mm,align=center,fill=blue!5},
+    dead/.style={draw,rounded corners=2pt,minimum width=0.9\columnwidth,minimum height=8mm,align=center,fill=red!7,dashed},
+    lbl/.style={font=\tiny\itshape,text=black!55},
+    every node/.style={inner sep=2pt}
+  ]
+    \node[layer] (front) {前端 React + xterm.js（Socket.IO 实时流）};
+    \node[layer,below=2.2mm of front] (orch) {编排层：DeliveryEngine (macro/meso) → RalphEngine (micro)\\ProjectDecomposer：需求→PRD→WBS→契约，拓扑排序};
+    \node[layer,below=2.2mm of orch] (dec) {决策层：规则状态机 \texttt{preAnalyze}（100\% 命中）\\MonitorPlugins：领域策略 + 阶段状态机};
+    \node[dead,below=2.2mm of dec] (llm) {LLM 兜底 \texttt{analyze}（实测调用 0 次，被饿死）};
+    \node[layer,below=2.2mm of llm] (perc) {感知层：\,①Hook 事件\, ②终端抓屏\, ③进程指纹};
+    \node[layer,below=2.2mm of perc] (exec) {执行/会话层：node-pty + tmux；\texttt{send-keys} 落地动作};
+    \node[layer,below=2.2mm of exec] (state) {状态层：progress.json（原子写）+ SQLite 会话表};
+
+    % 感知→决策 上行；决策→执行 下行
+    \draw[-{Stealth}] (perc.north) -- node[right,lbl]{状态} (dec.south -| perc.north);
+    \draw[-{Stealth}] (dec.west) to[out=180,in=180] node[left,lbl]{动作} (exec.west);
+    \draw[-{Stealth},red!60,dashed] (dec) -- node[right,lbl,text=red!70]{永不回退} (llm);
+  \end{tikzpicture}
+  \caption{WhatyTerm 总体分层架构。红色虚线框为设计中的 LLM 兜底层，实测中从未被触发（\S\ref{sec:reality}）——控制流在规则层即闭环，永不下探。}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{会话层：tmux 作为持久化基底}
+\label{sec:arch-session}
+
+系统以 \texttt{Session} 抽象统一管理终端会话，运行后端可为 macOS/Linux 上的 tmux、Windows 原生 PTY 或 mux-server 守护进程。以 tmux 为例，会话进程通过 \texttt{pty.spawn} 挂接到 \texttt{tmux attach-session}，真正的代理进程活在 tmux 中，前端 PTY 仅是“观察窗口”。这一设计带来两个关键性质：其一，前端断开或崩溃不影响会话，系统启动时以 \texttt{tmux has-session} 探测并恢复未关闭的会话；其二，所有对代理的操作都归结为 \texttt{tmux send-keys} 注入按键，从而将“LLM 的语义决策”与“终端的具体操作”彻底解耦。会话元数据持久化于 SQLite，运行态由 tmux 承载，不可恢复的旧会话另存于 \texttt{closed\_sessions} 表供重启。
+
+\subsection{感知层：三通道信号融合}
+\label{sec:arch-perception}
+
+准确判断“代理此刻处于什么状态”是整个系统的前提。WhatyTerm 不依赖单一信号源，而是融合三路互补通道。
+
+\textbf{通道一：Hook 事件（精确时序）。} 主流编码代理提供官方 Hook 机制，可在工具调用前后（\texttt{PreToolUse}/\texttt{PostToolUse}）与会话停止（\texttt{Stop}）时主动推送事件。WhatyTerm 自动将 Hook 安装到 Claude Code、Gemini、Codex 等多家 CLI，并以 Claude Code 的事件模型为标准接口，通过适配器将其他 CLI 的事件名归一化（如 Gemini 的 \texttt{BeforeTool}/\texttt{AfterTool}/\texttt{SessionEnd}）。Hook 提供了比屏幕解析更精确的运行/空闲边界：\texttt{PreToolUse} 到达即置会话为 \texttt{working}，\texttt{PostToolUse}/\texttt{Stop} 到达即置为 \texttt{idle}。该状态被自动化循环直接消费——处于 \texttt{working} 期间不打扰代理，避免误操作。
+
+\textbf{通道二：终端抓屏（语义内容）。} Hook 只给出时序边界，具体“屏幕上在问什么”仍需解析文本。系统以 \texttt{tmux capture-pane -p -e} 周期性抓取屏幕内容，供决策层做语义分析。由于后台监控对每个会话每秒可能多次抓屏，若每次都同步 fork 子进程会周期性阻塞事件循环，系统实现了约 1.5 秒 TTL 的快照缓存与异步抓屏的并发去重（多个并发调用共享同一进行中的 exec Promise），将每秒的进程创建从数十次降至每会话约一次。
+
+\textbf{通道三：进程指纹（CLI 身份）。} 判断“当前跑的是哪家 CLI”优先采用进程级检测（检查 tmux 会话下的进程），失败时回退到终端文本指纹（为每种 CLI 预置一组特征正则）。准确的 CLI 身份使决策层能加载正确的状态判定规则。
+
+三通道的融合使系统兼具\emph{精确的时序}（Hook）、\emph{丰富的语义}（抓屏）与\emph{正确的身份}（进程），显著降低了单一屏幕解析带来的延迟与误判。
+
+\subsection{会话精确归属}
+\label{sec:arch-attribution}
+
+同一工作目录下可能同时运行多个编码代理实例，仅靠工作目录无法区分 Hook 事件应归属哪个会话。为此，Hook 脚本回传其所在的 \texttt{\$TMUX\_PANE}，系统优先通过 \texttt{tmux display-message} 反查该 pane 属于哪个 tmux 会话，从而实现事件到会话的精确归属；仅在无 pane 信息时才回退到工作目录的最长前缀匹配。此外，Hook 脚本作为 CLI 的子进程，会继承 CLI 实际注入的环境变量，因而还顺带回传了当前生效的供应商 base URL 与模型等元数据，作为判断“当前使用哪个供应商”的最高优先级证据。
+
+\subsection{安全边界}
+\label{sec:arch-security}
+
+由于 Hook 端点接收会触发自动操作的事件，系统为其生成 32 字节随机 Token（文件权限 0600），Hook 脚本仅从本机回环地址上报并携带该 Token，服务端逐一校验，防止外部伪造事件。会话名在用于 \texttt{tmux} 命令前经过清洗以防命令注入。这些机制构成了自动化操作的基本安全边界，更完整的权限与失败模式讨论见 \S\ref{sec:discussion}。

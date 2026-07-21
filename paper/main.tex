@@ -1,0 +1,72 @@
+% !TEX program = xelatex
+% WhatyTerm 论文主文件
+% 编译：xelatex main.tex && bibtex main && xelatex main.tex && xelatex main.tex
+% 依赖中文字体，需使用 XeLaTeX 编译。
+
+\documentclass[10pt,twocolumn]{ctexart}
+
+% ---- 页面与基础宏包 ----
+\usepackage[a4paper,margin=1.8cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage[ruled,linesnumbered]{algorithm2e}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,backgrounds}
+
+% ---- 中文与排版风格 ----
+\setlength{\columnsep}{0.7cm}
+\captionsetup{font=small}
+\setlist{nosep,leftmargin=1.6em}
+
+% ---- 代码样式 ----
+\definecolor{codebg}{RGB}{247,247,247}
+\definecolor{codekw}{RGB}{0,90,160}
+\definecolor{codecm}{RGB}{110,120,130}
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  backgroundcolor=\color{codebg},
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecm}\itshape,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framesep=3pt,
+  showstringspaces=false,
+  aboveskip=6pt,belowskip=6pt
+}
+
+% ---- 元信息 ----
+\title{\bfseries 当自主开发退化为“点继续”：\\一个 AI 终端编排系统的设计、部署与实测反思}
+\author{网梯 harness 项目组\\ \small \texttt{https://github.com/auntunt/WhatyTerm}}
+\date{2026 年 7 月}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\input{sections/abstract}
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/architecture}
+\input{sections/method}
+\input{sections/application}
+\input{sections/reality}
+\input{sections/rootcause}
+\input{sections/evaluation}
+\input{sections/discussion}
+\input{sections/conclusion}
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
