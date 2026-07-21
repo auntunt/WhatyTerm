@@ -162,6 +162,7 @@ class ProgressManager {
     if (!progress) return false;
     const feature = progress.features.find(f => f.id === featureId);
     if (!feature) return false;
+    if (!Array.isArray(feature.evaluations)) feature.evaluations = [];
     feature.evaluations.push({
       timestamp: new Date().toISOString(),
       passed: evalResult.passed,
