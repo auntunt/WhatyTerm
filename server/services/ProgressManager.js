@@ -243,6 +243,100 @@ class ProgressManager {
     return { blocked: feature.blocked, retryCount: feature.retryCount };
   }
 
+  // ───────── Stage 4：blocked 任务人工介入 ─────────
+
+  /** 跳过任务：标记为 completed 但记 skipped 标志（不再阻塞后续依赖），或彻底排除。
+   * @param {string} mode 'skip'（当完成跳过，解锁下游）| 'exclude'（排除，保持 blocked 不解锁）
+   */
+  skipTask(sessionId, featureId, mode = 'skip') {
+    const progress = this.loadProgress(sessionId);
+    if (!progress) return false;
+    const feature = progress.features.find(f => f.id === featureId);
+    if (!feature) return false;
+    if (mode === 'exclude') {
+      feature.blocked = true;
+      feature.status = 'pending';
+      feature.skipped = false;
+      feature.excluded = true;
+    } else {
+      // 当作完成跳过：下游依赖可继续（getNextTask 用 completed 判定依赖满足）
+      feature.status = 'completed';
+      feature.blocked = false;
+      feature.skipped = true;
+    }
+    return this.saveProgress(sessionId, progress);
+  }
+
+  /** 解除阻塞并重试：清 blocked、retryCount 归零、status=pending，使其重新进入调度。 */
+  unblockAndRetry(sessionId, featureId) {
+    const progress = this.loadProgress(sessionId);
+    if (!progress) return false;
+    const feature = progress.features.find(f => f.id === featureId);
+    if (!feature) return false;
+    feature.blocked = false;
+    feature.excluded = false;
+    feature.skipped = false;
+    feature.retryCount = 0;
+    feature.status = 'pending';
+    return this.saveProgress(sessionId, progress);
+  }
+
+  /** 修改任务需求/验收标准（人工介入改需求后再重试）。传入字段才更新。 */
+  updateTaskRequirement(sessionId, featureId, { name, description, acceptanceCriteria } = {}) {
+    const progress = this.loadProgress(sessionId);
+    if (!progress) return false;
+    const feature = progress.features.find(f => f.id === featureId);
+    if (!feature) return false;
+    if (typeof name === 'string' && name.trim()) feature.name = name.trim();
+    if (typeof description === 'string') feature.description = description;
+    if (Array.isArray(acceptanceCriteria)) feature.acceptanceCriteria = acceptanceCriteria;
+    return this.saveProgress(sessionId, progress);
+  }
+
+  /** 失败快照目录 */
+  _snapshotDir(sessionId) {
+    return path.join(WEBTMUX_DIR, sessionId, 'snapshots');
+  }
+
+  /** 保存失败快照：worktree/工作区 diff + Validator 全文，供事后诊断。 */
+  saveFailureSnapshot(sessionId, featureId, { diff = '', validatorOutput = '', reason = '' } = {}) {
+    try {
+      const dir = this._snapshotDir(sessionId);
+      fs.mkdirSync(dir, { recursive: true });
+      const snap = {
+        featureId,
+        reason,
+        diff: (diff || '').slice(0, 200000),
+        validatorOutput: (validatorOutput || '').slice(0, 200000),
+        savedAt: new Date().toISOString(),
+      };
+      const safeId = String(featureId).replace(/[^a-zA-Z0-9._-]/g, '_');
+      fs.writeFileSync(path.join(dir, `${safeId}.json`), JSON.stringify(snap, null, 2), 'utf-8');
+      // 在 feature 上打标记，便于前端知道有快照可看
+      const progress = this.loadProgress(sessionId);
+      if (progress) {
+        const feature = progress.features.find(f => f.id === featureId);
+        if (feature) { feature.hasSnapshot = true; this.saveProgress(sessionId, progress); }
+      }
+      return true;
+    } catch (err) {
+      console.error('[ProgressManager] 保存失败快照失败:', err.message);
+      return false;
+    }
+  }
+
+  /** 读取失败快照 */
+  getFailureSnapshot(sessionId, featureId) {
+    try {
+      const safeId = String(featureId).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const file = path.join(this._snapshotDir(sessionId), `${safeId}.json`);
+      if (!fs.existsSync(file)) return null;
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
+
   /** 追加一条 Codebase Pattern（去重） */
   addPattern(sessionId, pattern) {
     if (!pattern) return false;

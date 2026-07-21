@@ -255,3 +255,80 @@
   color: hsl(142 70% 65%); cursor: pointer;
 }
 .ralph-phase-paused { color: hsl(38 92% 55%); }
+
+/* ── 扇出（自主版 Orca）竞标 UI ───────────────────────── */
+.ralph-fanout-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 6px; font-size: 11px;
+}
+.ralph-fanout-label { color: hsl(var(--muted-foreground)); font-weight: 600; }
+.ralph-fanout-row select {
+  font-size: 11px; padding: 2px 6px; border-radius: 4px;
+  background: hsl(220 14% 12%); color: hsl(var(--foreground));
+  border: 1px solid hsl(220 14% 24%);
+}
+.ralph-fanout-clis { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ralph-fanout-cli { display: flex; align-items: center; gap: 3px; color: hsl(var(--muted-foreground)); }
+.ralph-fanout-hint { color: hsl(200 80% 60%); font-size: 10px; }
+
+.ralph-fanout-board {
+  margin-top: 8px; padding: 8px; border-radius: 6px;
+  background: hsl(220 14% 9%); border: 1px solid hsl(260 60% 40% / 0.4);
+}
+.ralph-fanout-board-title { font-size: 11px; font-weight: 600; color: hsl(260 70% 72%); margin-bottom: 6px; }
+.ralph-fanout-cands { display: flex; flex-direction: column; gap: 4px; }
+.ralph-fanout-cand {
+  display: flex; align-items: center; gap: 10px; font-size: 11px;
+  padding: 3px 6px; border-radius: 4px; background: hsl(220 14% 12%);
+}
+.ralph-fanout-cand.winner { background: hsl(142 60% 30% / 0.25); border: 1px solid hsl(142 70% 45%); }
+.rfc-name { font-family: monospace; color: hsl(var(--foreground)); min-width: 92px; }
+.rfc-phase { color: hsl(var(--muted-foreground)); }
+.rfc-score.pass { color: hsl(142 70% 60%); }
+.rfc-score.fail { color: hsl(0 70% 62%); }
+
+/* ── Stage 4：blocked 介入 + 快照 + 成本 ───────────────── */
+.ralph-blocked-panel {
+  margin-top: 8px; padding: 8px; border-radius: 6px;
+  background: hsl(0 60% 12% / 0.5); border: 1px solid hsl(0 70% 45% / 0.5);
+}
+.ralph-blocked-title { font-size: 11px; font-weight: 600; color: hsl(0 80% 72%); margin-bottom: 6px; }
+.ralph-blocked-item { padding: 6px; border-radius: 4px; background: hsl(220 14% 11%); margin-bottom: 6px; }
+.rbi-head { font-size: 12px; color: hsl(var(--foreground)); }
+.rbi-id { font-family: monospace; color: hsl(var(--muted-foreground)); margin-right: 4px; }
+.rbi-reason { font-size: 10px; color: hsl(0 70% 68%); margin: 3px 0; }
+.rbi-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.rbi-actions button {
+  font-size: 10px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  background: hsl(220 14% 16%); color: hsl(var(--foreground)); border: 1px solid hsl(220 14% 26%);
+}
+.rbi-actions button:hover { background: hsl(220 14% 22%); }
+.rbi-edit { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.rbi-edit input, .rbi-edit textarea {
+  font-size: 11px; padding: 4px 6px; border-radius: 4px;
+  background: hsl(220 14% 10%); color: hsl(var(--foreground)); border: 1px solid hsl(220 14% 24%);
+}
+.rbi-edit-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.rbi-edit-actions button { font-size: 10px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+  background: hsl(220 14% 16%); color: hsl(var(--foreground)); border: 1px solid hsl(220 14% 26%); }
+.rbi-edit-actions button.primary { background: hsl(142 60% 30%); border-color: hsl(142 70% 45%); }
+
+.ralph-snapshot {
+  margin-top: 8px; padding: 8px; border-radius: 6px;
+  background: hsl(220 14% 9%); border: 1px solid hsl(220 14% 24%);
+}
+.ralph-snapshot-head { display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; font-weight: 600; color: hsl(var(--foreground)); margin-bottom: 6px; }
+.ralph-snapshot-head button { font-size: 10px; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+  background: hsl(220 14% 16%); color: hsl(var(--foreground)); border: 1px solid hsl(220 14% 26%); }
+.ralph-snapshot-section { font-size: 10px; color: hsl(var(--muted-foreground)); margin: 6px 0 2px; }
+.ralph-snapshot-pre {
+  max-height: 180px; overflow: auto; background: hsl(220 14% 6%); border-radius: 4px;
+  padding: 6px; font-family: monospace; font-size: 10px; line-height: 1.4;
+  color: hsl(var(--muted-foreground)); white-space: pre-wrap; word-break: break-all; margin: 0;
+}
+.ralph-snapshot-empty { font-size: 11px; color: hsl(var(--muted-foreground)); }
+
+.ralph-cost { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px;
+  font-size: 10px; color: hsl(var(--muted-foreground)); }
+.ralph-cost-item { white-space: nowrap; }

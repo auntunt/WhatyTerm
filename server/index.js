@@ -1,17 +1,11 @@
-// 延迟导入 crashReporter（ES module 顶层 import 在下方）
-let _crashReporter = null;
-const getCrashReporter = () => _crashReporter;
-
 // 全局错误处理 - 必须在最顶部，防止任何未捕获异常导致进程崩溃
 process.on('uncaughtException', (err) => {
   console.error(`[FATAL] 未捕获异常: ${err.message}`);
   console.error(err.stack);
-  getCrashReporter()?.report('uncaughtException', err).catch(() => {});
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error(`[FATAL] 未处理的 Promise 拒绝:`, reason);
-  getCrashReporter()?.report('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason))).catch(() => {});
 });
 
 process.on('SIGTERM', () => { sleepPrevention?.destroy(); process.exit(0); });
@@ -125,20 +119,16 @@ import { apiLimiter, authLimiter, aiLimiter } from './middleware/rateLimiter.js'
 import { createHookRouter } from './routes/hookRoutes.js';
 import { createSessionAnalyzeRouter } from './routes/sessionAnalyzeRoutes.js';
 import { createAuthRouter } from './routes/authRoutes.js';
-import { createTunnelRouter, createFrpRouter } from './routes/tunnelRoutes.js';
 import { createCliToolsRouter } from './routes/cliToolsRoutes.js';
 import { createTokenStatsRouter } from './routes/tokenStatsRoutes.js';
 import { createProjectRecordingRouter } from './routes/projectRecordingRoutes.js';
 import { createSleepRouter } from './routes/sleepRoutes.js';
 import ccSwitchRoutes from './routes/ccSwitchRoutes.js';
 import { DEFAULT_MODEL, CLAUDE_MODEL_FALLBACK_LIST } from './config/constants.js';
-import cloudflareTunnel from './services/CloudflareTunnel.js';
-import frpTunnel from './services/FrpTunnel.js';
 import projectTaskReader from './services/ProjectTaskReader.js';
 import RecentProjectsService from './services/RecentProjectsService.js';
 import processDetector from './services/ProcessDetector.js';
 import { getTerminalRecorder } from './services/TerminalRecorder.js';
-import subscriptionService from './services/SubscriptionService.js';
 import { getProjectRecordingService } from './services/ProjectRecordingService.js';
 import cliRegistry from './services/CliRegistry.js';
 import HookServer from './services/HookServer.js';
@@ -151,19 +141,14 @@ import progressManager from './services/ProgressManager.js';
 import PlannerService from './services/PlannerService.js';
 import { DeliveryEngine } from './services/delivery/DeliveryEngine.js';
 import EvaluatorService from './services/EvaluatorService.js';
-// Ralph 自主开发：经公开壳 loader 加载付费闭源核心（缺失时优雅降级）
+// Ralph 自主开发：经公开壳 loader 加载核心（缺失时优雅降级）
 import { RalphEngine, RALPH_CORE_PRESENT } from './services/ralph/loader.js';
-import telemetryService from './services/TelemetryService.js';
-import crashReporter from './services/CrashReporter.js';
 import sleepPrevention from './services/SleepPreventionService.js';
 import PuppeteerReaper from './services/PuppeteerReaper.js';
 import SessionRelay from './services/SessionRelay.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// 绑定 crashReporter 到全局错误处理
-_crashReporter = crashReporter;
 
 // 初始化内置供应商数据库（优先使用 CC-Switch，不存在则创建内置数据库）
 builtinProviderDB.init();
@@ -916,7 +901,9 @@ let sessionManagerReady = false;
     console.log('[Server] SessionManager 初始化完成');
     _initProviderHelper();
     loadProviderPriority();
-    ralphEngine = new RalphEngine(sessionManager, io);
+    ralphEngine = new RalphEngine(sessionManager, io, aiEngine);
+    ralphEngine.ensureProvider = ensureSessionProviderReady;
+    ralphEngine.resolveProviderEnv = resolveFanoutProviderEnv;
     console.log('[Server] RalphEngine 初始化完成');
     deliveryEngine = new DeliveryEngine(sessionManager, ralphEngine, aiEngine, io);
     console.log('[Server] DeliveryEngine 初始化完成');
@@ -931,7 +918,9 @@ let sessionManagerReady = false;
     sessionManagerReady = true;
     _initProviderHelper();
     loadProviderPriority();
-    ralphEngine = new RalphEngine(sessionManager, io);
+    ralphEngine = new RalphEngine(sessionManager, io, aiEngine);
+    ralphEngine.ensureProvider = ensureSessionProviderReady;
+    ralphEngine.resolveProviderEnv = resolveFanoutProviderEnv;
     hookServer = new HookServer(currentPort);
     deliveryEngine = new DeliveryEngine(sessionManager, ralphEngine, aiEngine, io);
     hookServer.install();
@@ -1275,15 +1264,6 @@ const authMiddleware = (req, res, next) => {
 // ── 认证路由 ───────────────────────────────────────────────
 const authRouter = createAuthRouter({ authService, isLocalRequest });
 app.use('/api/auth', authRouter);
-
-// ── 隧道路由 ───────────────────────────────────────────────
-const AI_SETTINGS_PATH = join(__dirname, 'db/ai-settings.json');
-const tunnelRouter = createTunnelRouter({
-  frpTunnel, cloudflareTunnel, AI_SETTINGS_PATH, existsSync, readFileSync, writeFileSync
-});
-const frpRouter = createFrpRouter({ frpTunnel });
-app.use('/api/tunnel', tunnelRouter);
-app.use('/api/frp', frpRouter);
 
 // 同步全局 Claude Code 配置到项目级别 settings.local.json
 // 只允许从全局复制到项目，不允许反向写入全局配置
@@ -1989,6 +1969,13 @@ async function runBackgroundAutoAction() {
     const session = sessionManager.getSession(sessionData.id);
     if (!session) continue;
 
+    // 隔离：RalphEngine 自主会话用 headless CLI 独占终端，错误修复流程会发 claude -c
+    // 拉起交互式 claude，会把 headless 命令堵死。autonomous 会话一律跳过错误检测。
+    try {
+      const pm = progressManager.loadProgress(sessionData.id);
+      if (pm?.mode === 'autonomous' && ralphEngine?.isRunning?.(sessionData.id)) continue;
+    } catch {}
+
     // 跳过正在修复中的会话
     if (session.isFixingClaudeError) continue;
     // 如果有待处理的修复建议，且自动操作已开启，则清除建议并继续执行修复
@@ -2324,6 +2311,13 @@ async function runBackgroundAutoAction() {
   // === 原有的自动操作逻辑（需要开启自动操作开关）===
   for (const sessionData of sessions) {
     if (!sessionData.autoActionEnabled) continue;
+
+    // 隔离：RalphEngine 自主会话（autonomous 模式）用 headless CLI 独占终端，
+    // 绝不能让自动操作往里敲 claude -c / 模拟按键，否则会把 headless 命令堵死。
+    try {
+      const pm = progressManager.loadProgress(sessionData.id);
+      if (pm?.mode === 'autonomous' && ralphEngine?.isRunning?.(sessionData.id)) continue;
+    } catch {}
 
     const session = sessionManager.getSession(sessionData.id);
     if (!session || session.isAutoActioning) continue;
@@ -3599,6 +3593,95 @@ function applySessionProvider(session, appType, providerId) {
 }
 
 /**
+ * 确保会话的供应商 / relay 映射就绪（供自主引擎 headless 执行前调用）。
+ *
+ * 背景：第三方供应商走本会话本地反代（ANTHROPIC_BASE_URL=/relay/<sessionId>），真实 URL/密钥
+ * 存在服务端内存映射 sessionRelay 里。该映射虽持久化，但若会话【从未在面板选过供应商】、或映射
+ * 文件损坏/被清，headless 的 claude 请求会命中 relay 502，CLI 打印 "Execution error"、输出为空
+ * ——这是自主开发"一直跑不起来"的根因之一。此函数在执行前做自愈：映射缺失则用会话当前 provider
+ * 幂等重建。
+ *
+ * @param {object} session
+ * @returns {Promise<boolean>} true=就绪可执行；false=无可用供应商，应中止
+ */
+async function ensureSessionProviderReady(session) {
+  try {
+    const appType = session.aiType || 'claude';
+    // 仅 claude 走 relay 反代；codex/gemini 用 CODEX_HOME/.gemini，无 relay 依赖，视为就绪
+    if (appType !== 'claude') return true;
+
+    // 已有 relay 映射：就绪（热切换/持久化恢复的正常情形）
+    if (sessionRelay.get(session.id)) return true;
+
+    // 映射缺失：可能是官方 OAuth 会话（本就不经 relay），也可能是从未设过供应商。
+    // 尝试用会话记录的 claudeProvider.id 重建；没有则取当前默认供应商。
+    const providerId = session.claudeProvider?.id;
+    const res = applySessionProvider(session, 'claude', providerId);
+    if (res?.ok) {
+      // OAuth 会话 applySessionProvider 会 clear relay（不建映射），此时终端走订阅登录、无需 relay
+      if (sessionRelay.get(session.id) || session.claudeProvider) {
+        console.log(`[ensureProvider] 会话 ${session.name} relay/供应商映射已就绪`);
+        return true;
+      }
+    }
+    console.warn(`[ensureProvider] 会话 ${session.name} 无可用供应商映射（providerId=${providerId || '无'}）`);
+    return false;
+  } catch (e) {
+    console.error('[ensureProvider] 异常:', e.message);
+    return true; // 异常时不阻断执行，交由下游报错
+  }
+}
+
+/**
+ * 为扇出候选解析某 CLI 类型的 spawn 环境变量（每候选可用不同 CLI 竞标）。
+ *
+ * 与会话终端的 relay 反代不同：扇出候选 spawn 在独立 worktree 目录里，不经会话 tmux env、
+ * 也不共享会话 workingDir 的 settings.local.json，因此这里直接把【真实】供应商 URL/密钥注入子进程 env
+ * （claude: ANTHROPIC_BASE_URL/AUTH_TOKEN；codex: CODEX_HOME；gemini: env）。
+ *
+ * @param {object} session
+ * @param {string} aiType 候选使用的 CLI 类型
+ * @returns {object} providerEnv（可注入 spawn 的 env 键值；空对象表示走继承 env / 官方登录）
+ */
+function resolveFanoutProviderEnv(session, aiType) {
+  try {
+    // 优先用会话为该 CLI 记录的供应商 id；否则让 resolveProviderInfo 取当前默认
+    const provKey = aiType === 'codex' ? 'codexProvider'
+      : aiType === 'gemini' ? 'geminiProvider'
+      : aiType === 'grok' ? 'grokProvider' : 'claudeProvider';
+    const providerId = session?.[provKey]?.id;
+    const info = resolveProviderInfo(aiType, providerId);
+    if (!info) return {};
+
+    if (aiType === 'claude') {
+      if (info.isOAuth) return {}; // 官方订阅登录：spawn 继承 env 即可，无需注入
+      const env = {};
+      if (info.env.ANTHROPIC_BASE_URL) env.ANTHROPIC_BASE_URL = info.env.ANTHROPIC_BASE_URL;
+      const key = info.env.ANTHROPIC_AUTH_TOKEN || info.env.ANTHROPIC_API_KEY;
+      if (key) {
+        // 统一用 AUTH_TOKEN；清除可能继承的 API_KEY 以免冲突
+        env.ANTHROPIC_AUTH_TOKEN = key;
+        env.ANTHROPIC_API_KEY = null;
+      }
+      if (info.env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = info.env.ANTHROPIC_MODEL;
+      return env;
+    }
+    if (aiType === 'codex') {
+      // codex 用 CODEX_HOME 目录（auth.json/config.toml）。复用会话已建的 CODEX_HOME（若有）。
+      const codexHome = path.join(os.homedir(), '.webtmux', 'sessions', session.id, 'codex');
+      return existsSync(codexHome) ? { CODEX_HOME: codexHome } : {};
+    }
+    if (aiType === 'gemini' || aiType === 'grok') {
+      return { ...(info.env || {}) };
+    }
+    return {};
+  } catch (e) {
+    console.warn('[resolveFanoutProviderEnv] 失败:', e.message);
+    return {};
+  }
+}
+
+/**
  * 切换供应商 - 简化版：直接将选中供应商的配置写入本地配置文件
  */
 async function switchProviderStateMachine(session, appType, providerId, socket) {
@@ -4251,7 +4334,6 @@ io.on('connection', (socket) => {
         console.error('[Session创建] CLI 检测失败:', err.message);
       }
 
-      telemetryService.recordSession();
       socket.emit('session:created', session);
       io.emit('sessions:updated', sessionManager.listSessions());
     } catch (err) {
@@ -4465,17 +4547,15 @@ io.on('connection', (socket) => {
 
   // ───────── Ralph 自主模式 ─────────
 
-  // 付费门禁：未订阅则拦截并引导订阅。返回 true 表示已拦截（调用方应 return）
+  // 核心缺失时拦截（订阅门禁已移除，核心可用即放行）。返回 true 表示已拦截（调用方应 return）
   const ralphGate = (socket, sessionId) => {
-    if (RALPH_CORE_PRESENT && subscriptionService.isRalphAvailable()) return false;
+    if (RALPH_CORE_PRESENT) return false;
     const payload = {
       sessionId,
-      error: 'premium_required',
-      message: '自主开发是专业版功能，请订阅后使用',
-      subscriptionUrl: subscriptionService.getSubscriptionUrl?.() || ''
+      error: 'core_unavailable',
+      message: '自主开发核心模块不可用'
     };
     socket.emit('ralph:state', { ...payload, running: false });
-    socket.emit('ralph:premium_required', payload);
     return true;
   };
 
@@ -4512,7 +4592,7 @@ io.on('connection', (socket) => {
   });
 
   // 启动自主执行循环
-  socket.on('ralph:start', ({ sessionId, maxIterations }) => {
+  socket.on('ralph:start', ({ sessionId, maxIterations, fanout }) => {
     if (ralphGate(socket, sessionId)) return;
     if (!ralphEngine) {
       socket.emit('ralph:state', { sessionId, running: false, error: '引擎未就绪' });
@@ -4523,17 +4603,19 @@ io.on('connection', (socket) => {
       return;
     }
     // 非阻塞启动
-    // Ralph 自主模式联动开启监控自动操作：自主会话若回退到交互式 claude 弹确认框，
-    // 也能被自动放行，不会卡住（headless 模式本身不弹框，开启无副作用）
+    // 【互斥】Ralph 自主模式用 headless CLI（claude --print 单发单收），与"后台自动操作"
+    // 这套交互式监控互斥：后者会往终端敲交互式 claude / 反复发"继续"，把 headless 命令堵在
+    // 对话框里执行不了（表现为 claude 报 "Execution error"、输出为空）。所以自主会话必须
+    // 【关闭】自动操作，保持终端为干净 shell。此处与 ralph:wizard:start 保持一致。
     try {
       const s = sessionManager.getSession(sessionId);
-      if (s && !s.autoActionEnabled) {
-        s.updateSettings({ autoActionEnabled: true });
+      if (s && s.autoActionEnabled) {
+        s.updateSettings({ autoActionEnabled: false });
         sessionManager.updateSession(s);
         io.emit('sessions:updated', sessionManager.listSessions());
       }
     } catch {}
-    ralphEngine.start(sessionId, maxIterations || 100);
+    ralphEngine.start(sessionId, { maxIterations: maxIterations || 100, fanout: fanout || null });
   });
 
   // 停止自主执行
@@ -4553,13 +4635,73 @@ io.on('connection', (socket) => {
     if (ralphEngine) ralphEngine.resume(sessionId);
   });
 
+  // ───────── Stage 4：blocked 任务人工介入 + 成本 ─────────
+
+  // 若引擎空闲则自动续跑（介入解锁后让 loop 立刻拾起该任务）
+  const autoResumeIfIdle = (sessionId) => {
+    try {
+      if (ralphEngine && !ralphEngine.isRunning(sessionId) &&
+          progressManager.hasRunnableTask(sessionId)) {
+        ralphEngine.start(sessionId, { maxIterations: 100 });
+      }
+    } catch {}
+  };
+  const pushProgress = (sessionId) => {
+    const progress = progressManager.loadProgress(sessionId);
+    io.emit('progress:updated', { sessionId, progress });
+  };
+
+  // 跳过 blocked 任务（skip=当完成跳过解锁下游 / exclude=排除保持 blocked）
+  socket.on('ralph:task:skip', ({ sessionId, taskId, mode }, cb) => {
+    const ok = progressManager.skipTask(sessionId, taskId, mode === 'exclude' ? 'exclude' : 'skip');
+    pushProgress(sessionId);
+    if (mode !== 'exclude') autoResumeIfIdle(sessionId);
+    if (typeof cb === 'function') cb({ ok });
+  });
+
+  // 解除阻塞并重试（清 blocked + retryCount 归零）
+  socket.on('ralph:task:retry', ({ sessionId, taskId }, cb) => {
+    const ok = progressManager.unblockAndRetry(sessionId, taskId);
+    pushProgress(sessionId);
+    autoResumeIfIdle(sessionId);
+    if (typeof cb === 'function') cb({ ok });
+  });
+
+  // 改需求后重试（更新 description/验收标准，再解锁重试）
+  socket.on('ralph:task:edit', ({ sessionId, taskId, name, description, acceptanceCriteria }, cb) => {
+    progressManager.updateTaskRequirement(sessionId, taskId, { name, description, acceptanceCriteria });
+    const ok = progressManager.unblockAndRetry(sessionId, taskId);
+    pushProgress(sessionId);
+    autoResumeIfIdle(sessionId);
+    if (typeof cb === 'function') cb({ ok });
+  });
+
+  // 读取失败快照（worktree/工作区 diff + Validator 全文）
+  socket.on('ralph:task:snapshot', ({ sessionId, taskId }, cb) => {
+    const snapshot = progressManager.getFailureSnapshot(sessionId, taskId);
+    socket.emit('ralph:task:snapshot', { sessionId, taskId, snapshot });
+    if (typeof cb === 'function') cb({ snapshot });
+  });
+
+  // 会话 token / 成本统计
+  socket.on('ralph:cost', ({ sessionId }, cb) => {
+    let summary = null, byProvider = [];
+    try {
+      summary = tokenStatsService.getSessionSummary(sessionId) || null;
+      byProvider = tokenStatsService.getSessionStats(sessionId) || [];
+    } catch (e) { console.warn('[ralph:cost] 失败:', e.message); }
+    const payload = { sessionId, summary, byProvider };
+    socket.emit('ralph:cost', payload);
+    if (typeof cb === 'function') cb(payload);
+  });
+
   // ───────── 自主开发一键向导 ─────────
 
   // 向导 Step1→Step2：建目录 + git init + 建会话 + 自主拆分，返回任务清单
   socket.on('ralph:wizard:plan', async ({ projectName, parentDir, requirement, existingDir, aiType, providerId }, cb) => {
     const reply = (data) => { socket.emit('ralph:wizard:planned', data); if (typeof cb === 'function') cb(data); };
-    if (!RALPH_CORE_PRESENT || !subscriptionService.isRalphAvailable()) {
-      return reply({ error: 'premium_required', message: '自主开发是专业版功能，请订阅后使用', subscriptionUrl: subscriptionService.getSubscriptionUrl?.() || '' });
+    if (!RALPH_CORE_PRESENT) {
+      return reply({ error: 'core_unavailable', message: '自主开发核心模块不可用' });
     }
     try {
       await waitForSessionManager();
@@ -4573,6 +4715,14 @@ io.on('connection', (socket) => {
         if (!existsSync(workingDir)) mkdirSync(workingDir, { recursive: true });
       }
       if (!existsSync(workingDir)) return reply({ error: `目录不存在: ${workingDir}` });
+
+      // 护栏：禁止把 WhatyTerm 自身目录作为项目目录（否则 headless CLI 会在本仓库递归
+      // 调进当前会话，上下文串台、弹交互框卡死 —— 今天就踩了这个坑）。
+      const appRoot = path.resolve(__dirname, '..');
+      const wd = path.resolve(workingDir);
+      if (wd === appRoot || wd.startsWith(appRoot + path.sep)) {
+        return reply({ error: '不能把 WhatyTerm 自身目录作为项目目录，请另选一个空目录或独立项目目录' });
+      }
 
       // 2. 非 git 仓库则 git init（后续要建分支/提交）
       const isGitRepo = existsSync(path.join(workingDir, '.git'));
@@ -4662,10 +4812,10 @@ io.on('connection', (socket) => {
   });
 
   // 向导 Step2 确认：git 干净检查 + 建分支 + 启动执行
-  socket.on('ralph:wizard:start', ({ sessionId, enabledTaskIds, pauseAfterEachTask, ignoreDirty }, cb) => {
+  socket.on('ralph:wizard:start', ({ sessionId, enabledTaskIds, pauseAfterEachTask, ignoreDirty, fanout }, cb) => {
     const reply = (data) => { socket.emit('ralph:wizard:started', { sessionId, ...data }); if (typeof cb === 'function') cb(data); };
-    if (!RALPH_CORE_PRESENT || !subscriptionService.isRalphAvailable()) {
-      return reply({ error: 'premium_required', message: '自主开发是专业版功能，请订阅后使用', subscriptionUrl: subscriptionService.getSubscriptionUrl?.() || '' });
+    if (!RALPH_CORE_PRESENT) {
+      return reply({ error: 'core_unavailable', message: '自主开发核心模块不可用' });
     }
     try {
       if (!ralphEngine) return reply({ error: '引擎未就绪' });
@@ -4707,17 +4857,19 @@ io.on('connection', (socket) => {
       const progress = progressManager.loadProgress(sessionId);
       const branch = progress?.features?.find(f => f.branch)?.branch || `ralph/${Date.now().toString(36)}`;
 
-      // Ralph 自主模式联动开启监控自动操作（同 ralph:start，避免自主会话弹确认框卡住）
+      // Ralph 自主模式用 headless CLI（claude --print 单发单收），与"自动操作/claude -c
+      // 错误修复"这套交互式监控互斥：后者会往终端敲交互式 claude，把 headless 命令堵在
+      // 对话框里执行不了。所以自主会话必须【关闭】自动操作，保持终端为干净 shell。
       try {
         const s = sessionManager.getSession(sessionId);
-        if (s && !s.autoActionEnabled) {
-          s.updateSettings({ autoActionEnabled: true });
+        if (s && s.autoActionEnabled) {
+          s.updateSettings({ autoActionEnabled: false });
           sessionManager.updateSession(s);
           io.emit('sessions:updated', sessionManager.listSessions());
         }
       } catch {}
-      ralphEngine.start(sessionId, { maxIterations: 100, branch, pauseAfterEachTask: !!pauseAfterEachTask });
-      reply({ started: true, branch });
+      ralphEngine.start(sessionId, { maxIterations: 100, branch, pauseAfterEachTask: !!pauseAfterEachTask, fanout: fanout || null });
+      reply({ started: true, branch, fanout: fanout || null });
     } catch (err) {
       console.error('[Ralph向导] start 失败:', err.message);
       reply({ error: err.message });
@@ -6233,9 +6385,6 @@ async function startServer() {
         console.error('[Server] 启动健康检查调度器失败:', err);
       }
 
-      // 启动匿名遥测（每天上报一次使用统计）
-      telemetryService.start(subscriptionService);
-
       // 启动预约调度器
       scheduleManager.onScheduleTrigger((schedule) => {
         console.log(`[预约] 触发预约: ${schedule.id}, 项目: ${schedule.projectPath}, 会话: ${schedule.sessionId}, 动作: ${schedule.action}`);
@@ -6271,64 +6420,6 @@ async function startServer() {
         }
       });
       scheduleManager.startScheduler();
-
-      // 启动隧道服务（根据订阅状态选择策略）
-      try {
-        let tunnelUrl = null;
-        const isPremium = subscriptionService.hasValidSubscription();
-        const availableTunnels = subscriptionService.getAvailableTunnelTypes();
-        console.log(`[Server] 订阅状态: ${isPremium ? '付费用户' : '免费用户'}, 可用隧道: ${availableTunnels.join(', ')}`);
-
-        if (isPremium) {
-          // 付费用户：同时测试 FRP 和 Cloudflare，选择更快的
-          console.log('[Server] 付费用户：测试所有可用隧道，选择最快的...');
-
-          // 初始化两个隧道服务
-          frpTunnel.init(io, currentPort);
-          cloudflareTunnel.init(io, currentPort);
-
-          // 从订阅服务器获取 FRP 配置
-          const licenseKey = subscriptionService.licenseInfo?.code;
-          const machineId = subscriptionService.machineId;
-          const hasConfig = await frpTunnel.fetchServersConfig(licenseKey, machineId);
-
-          // 并行测试两种隧道
-          const frpInstalled = hasConfig && await frpTunnel.checkInstalled();
-          const results = await Promise.all([
-            frpInstalled ? frpTunnel.start() : Promise.resolve(null),
-            cloudflareTunnel.start()
-          ]);
-
-          const [frpUrl, cloudflareUrl] = results;
-
-          // 选择成功建立的隧道（优先 FRP，因为域名固定）
-          if (frpUrl) {
-            tunnelUrl = frpUrl;
-            console.log(`[Server] 使用 FRP 隧道: ${tunnelUrl}`);
-            // 停止 Cloudflare 隧道
-            if (cloudflareUrl) {
-              cloudflareTunnel.stop();
-            }
-            // 启动 FRP 健康检查
-            frpTunnel.startHealthCheck(60000);
-            frpTunnel.startTunnelCheck(30000);
-          } else if (cloudflareUrl) {
-            tunnelUrl = cloudflareUrl;
-            console.log(`[Server] FRP 不可用，使用 Cloudflare 隧道: ${tunnelUrl}`);
-          }
-        } else {
-          // 免费用户：只能使用 Cloudflare Tunnel
-          console.log('[Server] 免费用户：使用 Cloudflare Tunnel');
-          cloudflareTunnel.init(io, currentPort);
-          tunnelUrl = await cloudflareTunnel.start();
-        }
-
-        if (tunnelUrl) {
-          console.log(`外部访问地址: ${tunnelUrl}`);
-        }
-      } catch (err) {
-        console.error('[Server] 启动隧道服务失败:', err);
-      }
 
       // 对所有恢复的 session 进行初始 CLI 工具检测和供应商信息补充
       // 使用并行处理加速启动

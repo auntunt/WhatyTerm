@@ -17,6 +17,14 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
   const [enabledTasks, setEnabledTasks] = useState({});       // featureId -> bool（待确认勾选）
   const [pauseEach, setPauseEach] = useState(false);
   const [starting, setStarting] = useState(false);
+  // 扇出（自主版 Orca）：同一任务并行 N 候选竞标，自动挑最高分 merge
+  const [fanoutN, setFanoutN] = useState(1);            // 候选数（1=不扇出）
+  const [fanoutClis, setFanoutClis] = useState([]);     // 多 CLI 竞标列表（空=同 CLI 多跑）
+  const [fanoutState, setFanoutState] = useState(null); // 当前任务候选实时进度/得分
+  // Stage 4：blocked 介入 + 成本
+  const [cost, setCost] = useState(null);               // { summary, byProvider }
+  const [snapshot, setSnapshot] = useState(null);       // 当前查看的失败快照
+  const [editing, setEditing] = useState(null);         // 正在改需求的任务 { id, description }
   // 执行实时反馈
   const [ralphElapsed, setRalphElapsed] = useState(0); // 当前阶段已运行毫秒
   const [ralphBytes, setRalphBytes] = useState(0);     // 当前阶段输出字节
@@ -37,6 +45,10 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
     setRalphElapsed(0);
     setRalphBytes(0);
     setRalphStream([]);
+    setFanoutState(null);
+    setCost(null);
+    setSnapshot(null);
+    setEditing(null);
     if (!socket || !sessionId) return;
 
     socket.emit('progress:get', sessionId);
@@ -93,6 +105,47 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
       if (typeof data.bytes === 'number') setRalphBytes(data.bytes);
       if (data.lines?.length) setRalphStream(prev => [...prev, ...data.lines].slice(-60));
     };
+    // 扇出候选实时进度：维护每候选的阶段/得分，供面板显示各候选竞标情况
+    const handleRalphFanout = (data) => {
+      if (data.sessionId !== sessionId) return;
+      setFanoutState(prev => {
+        if (data.phase === 'start') {
+          const cands = {};
+          (data.candidates || []).forEach(c => { cands[c.index] = { ...c, phase: 'queued' }; });
+          return { taskId: data.taskId, cands, winner: null, done: false };
+        }
+        if (data.phase === 'done') {
+          return prev ? { ...prev, winner: data.winner, merged: data.merged, done: true,
+            results: data.results } : prev;
+        }
+        if (!prev) return prev;
+        const cands = { ...prev.cands };
+        const idx = data.index;
+        if (idx != null) {
+          cands[idx] = { ...(cands[idx] || { index: idx }),
+            aiType: data.aiType || cands[idx]?.aiType,
+            phase: data.phase,
+            ...(data.score != null ? { score: data.score, passed: data.passed, confidence: data.confidence } : {}),
+          };
+        }
+        return { ...prev, cands };
+      });
+    };
+
+    // Stage 4：任务被 blocked → 刷新进度并拉取成本
+    const handleRalphBlocked = (data) => {
+      if (data.sessionId !== sessionId) return;
+      socket.emit('progress:get', sessionId);
+      socket.emit('ralph:cost', { sessionId });
+    };
+    const handleCost = (data) => {
+      if (data.sessionId !== sessionId) return;
+      setCost({ summary: data.summary, byProvider: data.byProvider });
+    };
+    const handleSnapshot = (data) => {
+      if (data.sessionId !== sessionId) return;
+      setSnapshot(data.snapshot || { empty: true });
+    };
 
     socket.on('progress:data', handleData);
     socket.on('progress:updated', handleUpdated);
@@ -100,6 +153,12 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
     socket.on('ralph:log', handleRalphLog);
     socket.on('ralph:planning', handlePlanning);
     socket.on('ralph:progress', handleRalphProgress);
+    socket.on('ralph:fanout', handleRalphFanout);
+    socket.on('ralph:blocked', handleRalphBlocked);
+    socket.on('ralph:cost', handleCost);
+    socket.on('ralph:task:snapshot', handleSnapshot);
+    // 初次挂载拉一次成本
+    socket.emit('ralph:cost', { sessionId });
 
     return () => {
       socket.off('progress:data', handleData);
@@ -108,6 +167,10 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
       socket.off('ralph:log', handleRalphLog);
       socket.off('ralph:planning', handlePlanning);
       socket.off('ralph:progress', handleRalphProgress);
+      socket.off('ralph:fanout', handleRalphFanout);
+      socket.off('ralph:blocked', handleRalphBlocked);
+      socket.off('ralph:cost', handleCost);
+      socket.off('ralph:task:snapshot', handleSnapshot);
     };
   }, [socket, sessionId]);
 
@@ -165,6 +228,27 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
     setEnabledTasks(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
+  // ── Stage 4：blocked 任务介入操作 ──
+  const skipTask = (taskId, mode) => socket.emit('ralph:task:skip', { sessionId, taskId, mode });
+  const retryTask = (taskId) => socket.emit('ralph:task:retry', { sessionId, taskId });
+  const viewSnapshot = (taskId) => { setSnapshot(null); socket.emit('ralph:task:snapshot', { sessionId, taskId }); };
+  const openEdit = (f) => setEditing({ id: f.id, name: f.name, description: f.description || '' });
+  const submitEdit = () => {
+    if (!editing) return;
+    socket.emit('ralph:task:edit', {
+      sessionId, taskId: editing.id, name: editing.name, description: editing.description,
+    });
+    setEditing(null);
+  };
+
+  // 组装扇出配置：{count, clis}。count<=1 且无多 CLI → null（不扇出，保持原行为）
+  const buildFanout = () => {
+    const count = Math.max(1, parseInt(fanoutN, 10) || 1);
+    const clis = fanoutClis.filter(Boolean);
+    if (count <= 1 && clis.length <= 1) return null;
+    return { count, clis };
+  };
+
   // 确认任务清单并开始自主开发（走向导执行入口，带 git 干净护栏）
   const startRalphWizard = (e) => {
     e.stopPropagation();
@@ -172,10 +256,11 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
     const ids = (progress?.features || []).filter(f => enabledTasks[f.id]).map(f => f.id);
     if (ids.length === 0) { setPlanError('请至少勾选一个任务'); return; }
     setPlanError('');
+    const fanout = buildFanout();
     const doStart = (ignoreDirty) => {
       setStarting(true);
       socket.emit('ralph:wizard:start',
-        { sessionId, enabledTaskIds: ids, pauseAfterEachTask: pauseEach, ignoreDirty },
+        { sessionId, enabledTaskIds: ids, pauseAfterEachTask: pauseEach, ignoreDirty, fanout },
         (res) => {
           setStarting(false);
           if (res?.blocked === 'dirty') {
@@ -202,6 +287,12 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
   const fmtBytes = (b) => (!b ? '0B' : b < 1024 ? `${b}B` : `${(b / 1024).toFixed(1)}KB`);
+  const fmtNum = (n) => {
+    n = Number(n) || 0;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(n);
+  };
 
   if (!progress?.features?.length) {
     // 向导后台拆分中：即使还没任务清单也显示状态（用户此时已在会话窗口，可自由切换）
@@ -334,15 +425,138 @@ const SprintProgress = ({ socket, sessionId, goal }) => {
             )}
             {/* 全新待确认态：勾选任务 + 开始自主开发（刚拆分完、未开始） */}
             {!ralphRunning && !isInterrupted && (
-              <div className="ralph-confirm-row">
-                <button className="ralph-start-btn" onClick={startRalphWizard} disabled={starting}
-                  title="确认勾选的任务并开始自主开发（Developer→Validator 循环，带 git 干净护栏）">
-                  {starting ? '⏳ 启动中…' : '🚀 开始自主开发'}
-                </button>
-                <label className="ralph-pause-toggle" onClick={(e) => e.stopPropagation()}>
-                  <input type="checkbox" checked={pauseEach} onChange={(e) => setPauseEach(e.target.checked)} />
-                  <span>每个任务后暂停</span>
-                </label>
+              <>
+                <div className="ralph-confirm-row">
+                  <button className="ralph-start-btn" onClick={startRalphWizard} disabled={starting}
+                    title="确认勾选的任务并开始自主开发（Developer→Validator 循环，带 git 干净护栏）">
+                    {starting ? '⏳ 启动中…' : '🚀 开始自主开发'}
+                  </button>
+                  <label className="ralph-pause-toggle" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={pauseEach} onChange={(e) => setPauseEach(e.target.checked)} />
+                    <span>每个任务后暂停</span>
+                  </label>
+                </div>
+                {/* 扇出（自主版 Orca）：同任务并行多候选竞标，自动挑最高分 merge */}
+                <div className="ralph-fanout-row" onClick={(e) => e.stopPropagation()}
+                  title="同一任务并行派 N 个候选，各自实跑验收打分，自动选最高分合并回来">
+                  <span className="ralph-fanout-label">⚔️ 扇出竞标</span>
+                  <select value={fanoutN} onChange={(e) => setFanoutN(parseInt(e.target.value, 10))}>
+                    <option value={1}>关闭</option>
+                    <option value={2}>2 候选</option>
+                    <option value={3}>3 候选</option>
+                    <option value={4}>4 候选</option>
+                  </select>
+                  {fanoutN > 1 && (
+                    <span className="ralph-fanout-clis">
+                      {['claude', 'codex', 'gemini', 'grok'].map(c => (
+                        <label key={c} className="ralph-fanout-cli">
+                          <input type="checkbox" checked={fanoutClis.includes(c)}
+                            onChange={(e) => setFanoutClis(prev =>
+                              e.target.checked ? [...prev, c] : prev.filter(x => x !== c))} />
+                          {c}
+                        </label>
+                      ))}
+                      <span className="ralph-fanout-hint">
+                        {fanoutClis.length ? '多 CLI 竞标' : '同 CLI 多跑'}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+            {/* 扇出竞标实时看板：各候选阶段 + 得分 + 赢家 */}
+            {fanoutState && (ralphRunning || fanoutState.done) && (
+              <div className="ralph-fanout-board" onClick={(e) => e.stopPropagation()}>
+                <div className="ralph-fanout-board-title">
+                  ⚔️ 候选竞标{fanoutState.done && fanoutState.winner
+                    ? ` · 赢家 c${fanoutState.winner.index}(${fanoutState.winner.aiType}) ${fanoutState.merged ? '已合并' : '未合并'}`
+                    : '（进行中）'}
+                </div>
+                <div className="ralph-fanout-cands">
+                  {Object.values(fanoutState.cands || {}).map(c => (
+                    <div key={c.index}
+                      className={`ralph-fanout-cand ${fanoutState.winner?.index === c.index ? 'winner' : ''}`}>
+                      <span className="rfc-name">c{c.index} · {c.aiType}</span>
+                      <span className="rfc-phase">{
+                        c.phase === 'developing' ? '👨‍💻 开发' :
+                        c.phase === 'validating' ? '🔍 验证' :
+                        c.phase === 'scored' ? `✓ ${Number(c.score).toFixed(1)}分` :
+                        c.phase === 'dev_failed' ? '✗ 失败' : '⏳ 排队'
+                      }</span>
+                      {c.phase === 'scored' && (
+                        <span className={`rfc-score ${c.passed ? 'pass' : 'fail'}`}>
+                          {c.passed ? '通过' : '未过'} · 置信{Math.round((c.confidence || 0) * 100)}%
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Stage 4：blocked 任务人工介入面板 */}
+            {(() => {
+              const blockedTasks = (progress?.features || []).filter(f => f.blocked && !f.excluded);
+              if (!blockedTasks.length) return null;
+              return (
+                <div className="ralph-blocked-panel" onClick={(e) => e.stopPropagation()}>
+                  <div className="ralph-blocked-title">🚧 {blockedTasks.length} 个任务被阻塞，需要介入</div>
+                  {blockedTasks.map(f => (
+                    <div key={f.id} className="ralph-blocked-item">
+                      <div className="rbi-head">
+                        <span className="rbi-id">{f.id}</span> {f.name}
+                      </div>
+                      {f.validationNotes && <div className="rbi-reason">失败原因：{f.validationNotes}</div>}
+                      <div className="rbi-actions">
+                        <button onClick={() => retryTask(f.id)} title="解除阻塞并重试">↻ 重试</button>
+                        <button onClick={() => openEdit(f)} title="修改需求/验收标准后重试">✎ 改需求</button>
+                        <button onClick={() => skipTask(f.id, 'skip')} title="当作完成跳过，解锁依赖它的后续任务">⤼ 跳过</button>
+                        <button onClick={() => skipTask(f.id, 'exclude')} title="彻底排除该任务">✕ 排除</button>
+                        {f.hasSnapshot && <button onClick={() => viewSnapshot(f.id)} title="查看失败快照">🔍 快照</button>}
+                      </div>
+                      {editing?.id === f.id && (
+                        <div className="rbi-edit">
+                          <input value={editing.name}
+                            onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="任务标题" />
+                          <textarea value={editing.description} rows={3}
+                            onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+                            placeholder="需求/技术设计描述" />
+                          <div className="rbi-edit-actions">
+                            <button onClick={() => setEditing(null)}>取消</button>
+                            <button className="primary" onClick={submitEdit}>保存并重试</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            {/* 失败快照查看 */}
+            {snapshot && (
+              <div className="ralph-snapshot" onClick={(e) => e.stopPropagation()}>
+                <div className="ralph-snapshot-head">
+                  <span>失败快照{snapshot.featureId ? ` · ${snapshot.featureId}` : ''}</span>
+                  <button onClick={() => setSnapshot(null)}>✕ 关闭</button>
+                </div>
+                {snapshot.empty ? (
+                  <div className="ralph-snapshot-empty">无快照数据</div>
+                ) : (
+                  <>
+                    <div className="ralph-snapshot-section">📝 Validator 全文</div>
+                    <pre className="ralph-snapshot-pre">{snapshot.validatorOutput || '（无）'}</pre>
+                    <div className="ralph-snapshot-section">🔧 工作区 diff</div>
+                    <pre className="ralph-snapshot-pre">{snapshot.diff || '（无改动）'}</pre>
+                  </>
+                )}
+              </div>
+            )}
+            {/* 成本 / token 统计 */}
+            {cost?.summary?.total_tokens > 0 && (
+              <div className="ralph-cost" onClick={(e) => e.stopPropagation()}>
+                <span className="ralph-cost-item">🎫 {fmtNum(cost.summary.total_tokens)} tokens</span>
+                <span className="ralph-cost-item">↑ {fmtNum(cost.summary.total_input)} 输入</span>
+                <span className="ralph-cost-item">↓ {fmtNum(cost.summary.total_output)} 输出</span>
+                <span className="ralph-cost-item">🔁 {fmtNum(cost.summary.request_count)} 次请求</span>
               </div>
             )}
             <div className="ralph-controls">
