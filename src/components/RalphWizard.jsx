@@ -83,10 +83,6 @@ const RalphWizard = ({ socket, onClose, onStarted }) => {
       providerId: providerId || undefined
     }, (res) => {
       setLoading(false);
-      if (res.error === 'premium_required') {
-        setError('🔒 自主开发是专业版功能。' + (res.subscriptionUrl ? '点这里订阅：' + res.subscriptionUrl : '请订阅后使用'));
-        return;
-      }
       if (res.error) { setError(res.error); return; }
       // 会话已建好：立即关闭弹窗、切到会话窗口；拆分在后台进行，进度显示在会话窗口
       if (res.sessionId) {
@@ -103,7 +99,6 @@ const RalphWizard = ({ socket, onClose, onStarted }) => {
     const ids = features.filter(f => enabled[f.id]).map(f => f.id);
     socket.emit('ralph:wizard:start', { sessionId, enabledTaskIds: ids, pauseAfterEachTask: pauseEach, ignoreDirty }, (res) => {
       setLoading(false);
-      if (res.error === 'premium_required') { setError('🔒 自主开发是专业版功能，请订阅后使用'); return; }
       if (res.blocked === 'dirty') { setDirtyFiles(res.files || []); return; }
       if (res.error) { setError(res.error); return; }
       if (res.started) { onStarted?.(sessionId); onClose(); }

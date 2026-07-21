@@ -33,39 +33,6 @@ export function createAuthRouter({ authService, isLocalRequest }) {
     }
   });
 
-  // POST /online-login → 原 POST /api/auth/online-login（在线订阅账户登录）
-  router.post('/online-login', async (req, res) => {
-    const { email, password } = req.body;
-    const ip = req.ip || req.connection.remoteAddress;
-
-    if (authService.isLocked(ip)) {
-      return res.status(429).json({ success: false, error: '登录尝试次数过多，请 15 分钟后再试' });
-    }
-
-    if (!email || !password) {
-      return res.status(400).json({ success: false, error: '邮箱和密码必填' });
-    }
-
-    try {
-      const result = await authService.verifyOnlineCredentials(email, password);
-
-      if (result.valid) {
-        authService.clearAttempts(ip);
-        req.session.authenticated = true;
-        req.session.username = email;
-        req.session.userId = result.userId;
-        req.session.onlineAuth = true;
-        req.session.hasValidLicense = result.hasValidLicense;
-        res.json({ success: true, user: { email: result.email, name: result.name, hasValidLicense: result.hasValidLicense } });
-      } else {
-        const remaining = authService.recordFailedAttempt(ip);
-        res.status(401).json({ success: false, error: result.error || '邮箱或密码错误', remainingAttempts: remaining });
-      }
-    } catch (err) {
-      res.status(500).json({ success: false, error: '登录服务暂时不可用' });
-    }
-  });
-
   // POST /logout → 原 POST /api/auth/logout
   router.post('/logout', (req, res) => {
     req.session.destroy();

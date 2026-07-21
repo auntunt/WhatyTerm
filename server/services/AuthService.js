@@ -7,9 +7,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const AUTH_SETTINGS_PATH = join(__dirname, '../db/auth-settings.json');
 
-// 订阅服务器地址
-const SUBSCRIPTION_SERVER = process.env.SUBSCRIPTION_SERVER || 'https://term.whaty.org';
-
 const DEFAULT_SETTINGS = {
   enabled: false,  // 认证永久禁用
   username: 'admin',
@@ -106,37 +103,6 @@ export class AuthService {
   // 清除登录尝试记录（登录成功后）
   clearAttempts(ip) {
     this.loginAttempts.delete(ip);
-  }
-
-  // 验证在线凭据（调用订阅服务器）
-  async verifyOnlineCredentials(email, password) {
-    try {
-      const response = await fetch(`${SUBSCRIPTION_SERVER}/api/auth/verify-credentials`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ email, password })
-      });
-
-      if (!response.ok) {
-        console.error(`[AuthService] 在线验证失败: HTTP ${response.status}`);
-        return { valid: false, error: '验证服务暂时不可用' };
-      }
-
-      const result = await response.json();
-
-      if (result.valid) {
-        console.log(`[AuthService] 在线验证成功: ${email}`);
-      } else {
-        console.log(`[AuthService] 在线验证失败: ${email} - ${result.error}`);
-      }
-
-      return result;
-    } catch (err) {
-      console.error('[AuthService] 在线验证请求失败:', err.message);
-      return { valid: false, error: '无法连接到验证服务器' };
-    }
   }
 
   // 设置密码（同时启用认证）

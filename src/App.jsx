@@ -62,21 +62,6 @@ function useAuth() {
     return { success: false, error: data.error };
   };
 
-  // 在线登录（邮箱+密码，使用订阅系统账户）
-  const onlineLogin = async (email, password) => {
-    const res = await fetch('/api/auth/online-login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    const data = await res.json();
-    if (data.success) {
-      await checkAuth();
-      return { success: true, user: data.user };
-    }
-    return { success: false, error: data.error, remainingAttempts: data.remainingAttempts };
-  };
-
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     await checkAuth();
@@ -95,7 +80,7 @@ function useAuth() {
     return data;
   };
 
-  return { ...authStatus, login, onlineLogin, logout, setupAuth, checkAuth };
+  return { ...authStatus, login, logout, setupAuth, checkAuth };
 }
 
 // 光标同步防抖和位置缓存（模块级变量）
@@ -214,8 +199,7 @@ export default function App() {
   // 会话悬停提示状态
   const [hoveredSession, setHoveredSession] = useState(null);
   const [tooltipPosition, setTooltipPosition] = useState({ top: 0 });
-  // 订阅状态
-  const [subscriptionStatus, setSubscriptionStatus] = useState(null);
+
   const [sessionContextMenu, setSessionContextMenu] = useState(null); // { session, x, y }
   // 注意：autoActionEnabled 现在存储在服务器端，通过 session.autoActionEnabled 获取
 
@@ -496,16 +480,6 @@ export default function App() {
     });
     socket.emit('settings:load');
 
-    // 加载 tunnel URL
-    fetch('/api/tunnel/url')
-      .then(res => res.json())
-      .then(data => {
-        if (data.tunnelUrl) {
-          setTunnelUrl(data.tunnelUrl);
-        }
-      })
-      .catch(err => console.error('加载 tunnel URL 失败:', err));
-
     // 加载监控策略插件列表
     fetch('/api/monitor-plugins')
       .then(res => res.json())
@@ -515,26 +489,6 @@ export default function App() {
         }
       })
       .catch(err => console.error('加载监控插件失败:', err));
-
-    // 加载订阅状态
-    fetch('/api/subscription/status')
-      .then(res => res.json())
-      .then(data => {
-        setSubscriptionStatus(data);
-      })
-      .catch(err => console.error('加载订阅状态失败:', err));
-
-    // 监听 Cloudflare Tunnel 连接事件（自动获取免费域名）
-    const onTunnelConnected = (data) => {
-      console.log('[Tunnel] 已连接:', data.url);
-      setTunnelUrl(data.url);
-    };
-    const onTunnelDisconnected = () => {
-      console.log('[Tunnel] 已断开');
-      setTunnelUrl('');
-    };
-    socket.on('tunnel:connected', onTunnelConnected);
-    socket.on('tunnel:disconnected', onTunnelDisconnected);
 
     // 加载历史 AI 操作日志
     fetch('/api/ai-logs?limit=500')
@@ -556,8 +510,6 @@ export default function App() {
 
     return () => {
       socket.off('settings:loaded');
-      socket.off('tunnel:connected', onTunnelConnected);
-      socket.off('tunnel:disconnected', onTunnelDisconnected);
     };
   }, []);
 
@@ -1150,21 +1102,6 @@ export default function App() {
     }
   };
 
-  // 如果需要认证但未登录，显示登录页面
-  // 注意：本机访问时 authenticated 会自动为 true
-  if (auth.loading) {
-    return <div className="loading-screen">加载中...</div>;
-  }
-
-  // 远程访问但未设置密码，显示提示页面
-  if (auth.requirePasswordSetup) {
-    return <LoginPage auth={auth} />;
-  }
-
-  if (auth.enabled && !auth.authenticated) {
-    return <LoginPage auth={auth} />;
-  }
-
   // 处理文件拖入终端
   const handleTerminalDragOver = (e) => {
     e.preventDefault();
@@ -1337,19 +1274,6 @@ export default function App() {
         <div className="sidebar-footer">
           {/* 底部按钮行 */}
           <div className="sidebar-footer-row">
-            {/* 订阅状态标志 */}
-            <span
-              className={`subscription-badge ${subscriptionStatus?.valid ? 'pro' : 'free'}`}
-              title={subscriptionStatus?.valid
-                ? `${subscriptionStatus.info?.plan || 'Pro'} - 剩余 ${subscriptionStatus.remainingDays || 0} 天`
-                : '免费版 - 点击升级'}
-              onClick={() => {
-                setSettingsDefaultTab('subscription');
-                setShowSettings(true);
-              }}
-            >
-              {subscriptionStatus?.valid ? 'Pro' : 'Free'}
-            </span>
             {/* 二维码折叠按钮 */}
             {tunnelUrl && (
               <button
@@ -2713,447 +2637,6 @@ function QRCodeDisplay({ url }) {
   );
 }
 
-// 订阅状态缓存（模块级变量，避免重复请求）
-let subscriptionStatusCache = null;
-let subscriptionStatusCacheTime = 0;
-const SUBSCRIPTION_CACHE_TTL = 60000; // 缓存 60 秒
-
-// 订阅面板组件（嵌入设置页面）
-function SubscriptionPanel() {
-  const [status, setStatus] = useState(subscriptionStatusCache);
-  const [loading, setLoading] = useState(!subscriptionStatusCache);
-  const [activating, setActivating] = useState(false);
-  const [activationCode, setActivationCode] = useState('');
-  const [message, setMessage] = useState(null);
-
-  // 激活方式切换
-  const [activationMode, setActivationMode] = useState('login'); // 'login' | 'code'
-
-  // 邮箱+密码登录
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-
-  useEffect(() => {
-    // 如果缓存有效，直接使用
-    const now = Date.now();
-    if (subscriptionStatusCache && (now - subscriptionStatusCacheTime) < SUBSCRIPTION_CACHE_TTL) {
-      setStatus(subscriptionStatusCache);
-      setLoading(false);
-      return;
-    }
-    loadStatus();
-  }, []);
-
-  const loadStatus = async (forceRefresh = false) => {
-    // 如果不是强制刷新且缓存有效，直接返回
-    const now = Date.now();
-    if (!forceRefresh && subscriptionStatusCache && (now - subscriptionStatusCacheTime) < SUBSCRIPTION_CACHE_TTL) {
-      setStatus(subscriptionStatusCache);
-      setLoading(false);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const res = await fetch('/api/subscription/status');
-      const data = await res.json();
-      // 更新缓存
-      subscriptionStatusCache = data;
-      subscriptionStatusCacheTime = Date.now();
-      setStatus(data);
-    } catch (err) {
-      setMessage({ type: 'error', text: '加载订阅状态失败' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleActivate = async () => {
-    if (!activationCode.trim()) {
-      setMessage({ type: 'error', text: '请输入激活码' });
-      return;
-    }
-
-    try {
-      setActivating(true);
-      setMessage(null);
-
-      const res = await fetch('/api/subscription/activate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: activationCode.trim() })
-      });
-
-      const result = await res.json();
-
-      if (result.success) {
-        setMessage({ type: 'success', text: '激活成功！' });
-        setActivationCode('');
-        await loadStatus(true); // 强制刷新
-      } else {
-        setMessage({ type: 'error', text: result.message || '激活失败' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: '网络错误，请稍后重试' });
-    } finally {
-      setActivating(false);
-    }
-  };
-
-  // 邮箱+密码激活
-  const handleActivateByLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      setMessage({ type: 'error', text: '请输入邮箱和密码' });
-      return;
-    }
-
-    try {
-      setActivating(true);
-      setMessage(null);
-
-      const res = await fetch('/api/subscription/activate-by-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: email.trim(),
-          password: password.trim()
-        })
-      });
-
-      const result = await res.json();
-
-      if (result.success) {
-        setMessage({ type: 'success', text: '激活成功！' });
-        setEmail('');
-        setPassword('');
-        await loadStatus(true);
-      } else {
-        setMessage({ type: 'error', text: result.message || '激活失败' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: '网络错误，请稍后重试' });
-    } finally {
-      setActivating(false);
-    }
-  };
-
-  const handleVerify = async () => {
-    try {
-      setMessage(null);
-      const res = await fetch('/api/subscription/verify', { method: 'POST' });
-      const result = await res.json();
-
-      if (result.success) {
-        setMessage({ type: 'success', text: result.message || '验证成功' });
-        await loadStatus(true); // 强制刷新
-      } else {
-        setMessage({ type: 'error', text: result.message || '验证失败' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: '网络错误' });
-    }
-  };
-
-  const handleDeactivate = async () => {
-    if (!confirm('确定要停用许可证吗？')) return;
-
-    try {
-      const res = await fetch('/api/subscription/deactivate', { method: 'POST' });
-      const result = await res.json();
-
-      if (result.success) {
-        setMessage({ type: 'success', text: '许可证已停用' });
-        await loadStatus(true); // 强制刷新
-      } else {
-        setMessage({ type: 'error', text: result.message || '停用失败' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: '网络错误' });
-    }
-  };
-
-  const openSubscriptionPage = () => {
-    if (status?.subscriptionUrl) {
-      window.open(status.subscriptionUrl, '_blank');
-    }
-  };
-
-  const copyMachineId = () => {
-    if (status?.machineId) {
-      navigator.clipboard.writeText(status.machineId);
-      setMessage({ type: 'success', text: '机器 ID 已复制' });
-      setTimeout(() => setMessage(null), 2000);
-    }
-  };
-
-  if (loading) {
-    return <div style={{ textAlign: 'center', padding: '40px', color: '#888' }}>加载中...</div>;
-  }
-
-  return (
-    <div style={{ padding: '0 4px' }}>
-      {/* 消息提示 */}
-      {message && (
-        <div style={{
-          marginBottom: '16px',
-          padding: '12px',
-          borderRadius: '6px',
-          background: message.type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-          color: message.type === 'success' ? '#10b981' : '#ef4444'
-        }}>
-          {message.text}
-        </div>
-      )}
-
-      {/* 订阅状态 */}
-      <div style={{ marginBottom: '20px', padding: '16px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-          <span style={{ color: '#888' }}>订阅状态</span>
-          <span style={{
-            padding: '4px 12px',
-            borderRadius: '4px',
-            fontSize: '13px',
-            background: status?.valid ? 'rgba(16, 185, 129, 0.2)' : 'rgba(100, 100, 100, 0.3)',
-            color: status?.valid ? '#10b981' : '#888'
-          }}>
-            {status?.valid ? '已激活' : '未激活'}
-          </span>
-        </div>
-
-        {status?.valid && status?.info && (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-              <span style={{ color: '#888' }}>订阅类型</span>
-              <span style={{ color: '#fff' }}>{status.info.plan}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-              <span style={{ color: '#888' }}>到期时间</span>
-              <span style={{ color: '#fff' }}>{new Date(status.info.expiresAt).toLocaleDateString()}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: '#888' }}>剩余天数</span>
-              <span style={{ color: status.remainingDays <= 7 ? '#f59e0b' : '#fff' }}>
-                {status.remainingDays} 天
-              </span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* 机器 ID */}
-      <div style={{ marginBottom: '20px', padding: '16px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-          <span style={{ color: '#888' }}>机器 ID</span>
-          <button
-            onClick={copyMachineId}
-            style={{ background: 'none', border: 'none', color: '#3b82f6', cursor: 'pointer', fontSize: '13px' }}
-          >
-            复制
-          </button>
-        </div>
-        <code style={{ fontSize: '11px', color: '#aaa', wordBreak: 'break-all', display: 'block' }}>
-          {status?.machineId}
-        </code>
-        <small style={{ color: '#666', fontSize: '11px', marginTop: '8px', display: 'block' }}>
-          购买订阅时需要提供此 ID
-        </small>
-      </div>
-
-      {/* 激活区域 */}
-      {!status?.valid && (
-        <div style={{ marginBottom: '20px', padding: '16px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
-          <h3 style={{ fontSize: '14px', color: '#fff', marginBottom: '12px' }}>激活许可证</h3>
-
-          {/* 激活方式切换 */}
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-            <button
-              onClick={() => setActivationMode('login')}
-              style={{
-                flex: 1,
-                padding: '8px',
-                background: activationMode === 'login' ? '#3b82f6' : 'transparent',
-                border: '1px solid #4b5563',
-                borderRadius: '6px',
-                color: activationMode === 'login' ? '#fff' : '#888',
-                cursor: 'pointer',
-                fontSize: '13px'
-              }}
-            >
-              邮箱登录
-            </button>
-            <button
-              onClick={() => setActivationMode('code')}
-              style={{
-                flex: 1,
-                padding: '8px',
-                background: activationMode === 'code' ? '#3b82f6' : 'transparent',
-                border: '1px solid #4b5563',
-                borderRadius: '6px',
-                color: activationMode === 'code' ? '#fff' : '#888',
-                cursor: 'pointer',
-                fontSize: '13px'
-              }}
-            >
-              激活码
-            </button>
-          </div>
-
-          {/* 邮箱登录激活 */}
-          {activationMode === 'login' && (
-            <div style={{ marginBottom: '12px' }}>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="邮箱"
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  marginBottom: '8px',
-                  background: '#374151',
-                  border: '1px solid #4b5563',
-                  borderRadius: '6px',
-                  color: '#fff',
-                  fontSize: '14px',
-                  boxSizing: 'border-box'
-                }}
-              />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="密码"
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  marginBottom: '12px',
-                  background: '#374151',
-                  border: '1px solid #4b5563',
-                  borderRadius: '6px',
-                  color: '#fff',
-                  fontSize: '14px',
-                  boxSizing: 'border-box'
-                }}
-              />
-              <button
-                onClick={handleActivateByLogin}
-                disabled={activating}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  background: activating ? '#4b5563' : '#3b82f6',
-                  border: 'none',
-                  borderRadius: '6px',
-                  color: '#fff',
-                  cursor: activating ? 'not-allowed' : 'pointer',
-                  fontSize: '14px'
-                }}
-              >
-                {activating ? '激活中...' : '登录激活'}
-              </button>
-              <p style={{ fontSize: '12px', color: '#888', marginTop: '8px', textAlign: 'center' }}>
-                使用购买订阅时注册的邮箱和密码
-              </p>
-            </div>
-          )}
-
-          {/* 激活码激活 */}
-          {activationMode === 'code' && (
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-              <input
-                type="text"
-                value={activationCode}
-                onChange={(e) => setActivationCode(e.target.value)}
-                placeholder="输入激活码或许可证密钥"
-                style={{
-                  flex: 1,
-                  padding: '10px 12px',
-                  background: '#374151',
-                  border: '1px solid #4b5563',
-                  borderRadius: '6px',
-                  color: '#fff',
-                  fontSize: '14px'
-                }}
-              />
-              <button
-                onClick={handleActivate}
-                disabled={activating}
-                style={{
-                  padding: '10px 20px',
-                  background: activating ? '#4b5563' : '#3b82f6',
-                  border: 'none',
-                  borderRadius: '6px',
-                  color: '#fff',
-                  cursor: activating ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {activating ? '激活中...' : '激活'}
-              </button>
-            </div>
-          )}
-
-          <button
-            onClick={openSubscriptionPage}
-            style={{
-              width: '100%',
-              padding: '12px',
-              background: '#10b981',
-              border: 'none',
-              borderRadius: '6px',
-              color: '#fff',
-              cursor: 'pointer',
-              fontSize: '14px'
-            }}
-          >
-            购买订阅
-          </button>
-        </div>
-      )}
-
-      {/* 已激活的操作 */}
-      {status?.valid && (
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button
-            onClick={handleVerify}
-            style={{
-              flex: 1,
-              padding: '12px',
-              background: '#3b82f6',
-              border: 'none',
-              borderRadius: '6px',
-              color: '#fff',
-              cursor: 'pointer'
-            }}
-          >
-            在线验证
-          </button>
-          <button
-            onClick={handleDeactivate}
-            style={{
-              padding: '12px 20px',
-              background: '#ef4444',
-              border: 'none',
-              borderRadius: '6px',
-              color: '#fff',
-              cursor: 'pointer'
-            }}
-          >
-            停用
-          </button>
-        </div>
-      )}
-
-      {/* 缓存状态 */}
-      {status?.lastVerifyTime && (
-        <div style={{ marginTop: '16px', textAlign: 'center', fontSize: '12px', color: '#666' }}>
-          上次验证: {new Date(status.lastVerifyTime).toLocaleString()}
-          {status.cacheValid && ' (缓存有效)'}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SettingsModal({ settings, onChange, onSave, onClose, auth, tunnelUrl, onTunnelUrlChange, socket, defaultTab = 'api', onPlayback }) {
   const { t, language, setLanguage: changeLanguage } = useTranslation();
   const [activeTab, setActiveTab] = useState(defaultTab);
@@ -3476,12 +2959,6 @@ function SettingsModal({ settings, onChange, onSave, onClose, auth, tunnelUrl, o
             存储管理
           </button>
           <button
-            className={`tab-btn ${activeTab === 'subscription' ? 'active' : ''}`}
-            onClick={() => setActiveTab('subscription')}
-          >
-            订阅
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'advanced' ? 'active' : ''}`}
             onClick={() => setActiveTab('advanced')}
           >
@@ -3795,10 +3272,6 @@ function SettingsModal({ settings, onChange, onSave, onClose, auth, tunnelUrl, o
           <StorageManager socket={socket} onPlayback={onPlayback} />
         )}
 
-        {activeTab === 'subscription' && (
-          <SubscriptionPanel />
-        )}
-
         {activeTab === 'advanced' && (
           <AdvancedSettings embedded={true} />
         )}
@@ -3815,20 +3288,16 @@ function SettingsModal({ settings, onChange, onSave, onClose, auth, tunnelUrl, o
 // 关于页面组件
 function AboutPage({ socket, onClose }) {
   const { t } = useTranslation();
-  const [updateStatus, setUpdateStatus] = useState('');
-  const [checking, setChecking] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState(null);
   const [currentVersion, setCurrentVersion] = useState('');
   const [systemInfo, setSystemInfo] = useState(null);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
 
   useEffect(() => {
-    // 获取当前版本
-    fetch('/api/update/version')
-      .then(res => res.json())
-      .then(data => setCurrentVersion(data.version || '1.0.0'))
-      .catch(() => setCurrentVersion('1.0.0'));
+    // 获取当前版本（仅 Electron 模式可用）
+    if (window.electronAPI?.getAppVersion) {
+      window.electronAPI.getAppVersion()
+        .then(v => setCurrentVersion(v || ''))
+        .catch(() => {});
+    }
 
     // 获取系统信息
     if (socket) {
@@ -3843,84 +3312,6 @@ function AboutPage({ socket, onClose }) {
     }
   }, [socket]);
 
-  const checkUpdate = async () => {
-    setChecking(true);
-    setUpdateStatus(t('about.checking'));
-
-    try {
-      const response = await fetch('/api/update/check?force=true');
-      const data = await response.json();
-
-      if (data.error) {
-        setUpdateStatus('检查更新失败: ' + data.error);
-      } else if (data.hasUpdate) {
-        setUpdateInfo(data);
-        setUpdateStatus(`发现新版本: v${data.latestVersion}`);
-      } else {
-        setUpdateInfo(null);
-        setUpdateStatus(t('about.upToDate'));
-      }
-    } catch (error) {
-      setUpdateStatus('检查更新失败: ' + error.message);
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  const downloadUpdate = async () => {
-    if (!updateInfo) return;
-
-    setDownloading(true);
-    setDownloadProgress(0);
-
-    // 优先使用 Electron electron-updater 自动下载（无需用户手动操作）
-    if (window.electronAPI?.isElectron && window.electronAPI.downloadUpdate) {
-      try {
-        // 监听下载进度和完成状态
-        const cleanup = window.electronAPI.onUpdateStatus((data) => {
-          if (data.status === 'downloading') {
-            setDownloadProgress(Math.round(data.percent || 0));
-            setUpdateStatus(`正在下载 ${Math.round(data.percent || 0)}%`);
-          } else if (data.status === 'downloaded') {
-            setDownloadProgress(100);
-            setUpdateStatus('下载完成，等待重启安装');
-            setDownloading(false);
-            cleanup && cleanup();
-          } else if (data.status === 'error') {
-            setUpdateStatus('下载失败: ' + (data.message || ''));
-            setDownloading(false);
-            cleanup && cleanup();
-          }
-        });
-        await window.electronAPI.downloadUpdate();
-        return;
-      } catch (err) {
-        setUpdateStatus('自动下载失败，将打开浏览器: ' + err.message);
-        // 失败回退到浏览器下载
-      }
-    }
-
-    // Fallback：浏览器/Web 模式或自动下载失败时，打开浏览器下载
-    try {
-      const response = await fetch(`/api/update/download?platform=${navigator.platform.includes('Mac') ? 'darwin' : navigator.platform.includes('Win') ? 'win32' : 'linux'}&arch=${navigator.userAgent.includes('arm64') ? 'arm64' : 'x64'}`);
-      const data = await response.json();
-
-      if (data.url) {
-        window.open(data.url, '_blank');
-        setUpdateStatus('已打开下载页面');
-      } else if (updateInfo.downloadUrl) {
-        window.open(updateInfo.downloadUrl, '_blank');
-        setUpdateStatus('已打开下载页面');
-      } else {
-        setUpdateStatus('未找到下载链接');
-      }
-    } catch (error) {
-      setUpdateStatus('获取下载链接失败');
-    } finally {
-      setDownloading(false);
-    }
-  };
-
   return (
     <div className="about-page" style={{ padding: '20px' }}>
       {/* 应用信息 */}
@@ -3931,61 +3322,10 @@ function AboutPage({ socket, onClose }) {
         <p style={{ color: '#888', marginBottom: '8px' }}>
           {t('about.description')}
         </p>
-        <p style={{ color: '#666', fontSize: '14px' }}>
-          {t('about.version')}: v{currentVersion}
-        </p>
-      </div>
-
-      {/* 检查更新 */}
-      <div style={{ marginBottom: '30px', textAlign: 'center' }}>
-        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
-          <button
-            onClick={checkUpdate}
-            disabled={checking || downloading}
-            style={{
-              padding: '10px 24px',
-              background: '#4a9eff',
-              border: 'none',
-              borderRadius: '6px',
-              color: '#fff',
-              fontSize: '14px',
-              cursor: (checking || downloading) ? 'not-allowed' : 'pointer',
-              opacity: (checking || downloading) ? 0.6 : 1
-            }}
-          >
-            {checking ? t('about.checking') : t('about.checkUpdate')}
-          </button>
-          {updateInfo && updateInfo.hasUpdate && (
-            <button
-              onClick={downloadUpdate}
-              disabled={downloading}
-              style={{
-                padding: '10px 24px',
-                background: '#22c55e',
-                border: 'none',
-                borderRadius: '6px',
-                color: '#fff',
-                fontSize: '14px',
-                cursor: downloading ? 'not-allowed' : 'pointer',
-                opacity: downloading ? 0.6 : 1
-              }}
-            >
-              {downloading ? '下载中...' : `下载 v${updateInfo.latestVersion}`}
-            </button>
-          )}
-        </div>
-        {updateStatus && (
-          <p style={{ marginTop: '12px', color: updateInfo?.hasUpdate ? '#22c55e' : '#4a9eff', fontSize: '14px' }}>
-            {updateStatus}
+        {currentVersion && (
+          <p style={{ color: '#666', fontSize: '14px' }}>
+            {t('about.version')}: v{currentVersion}
           </p>
-        )}
-        {updateInfo && updateInfo.notes && (
-          <div style={{ marginTop: '16px', padding: '12px', background: '#2a2a2a', borderRadius: '8px', textAlign: 'left' }}>
-            <h4 style={{ color: '#fff', marginBottom: '8px', fontSize: '14px' }}>更新日志:</h4>
-            <p style={{ color: '#888', fontSize: '13px', whiteSpace: 'pre-wrap', maxHeight: '150px', overflow: 'auto' }}>
-              {updateInfo.notes}
-            </p>
-          </div>
         )}
       </div>
 
@@ -4327,101 +3667,3 @@ function QRCodeWidget({ url, onClose }) {
   );
 }
 
-// 登录页面组件
-function LoginPage({ auth }) {
-  const { t } = useTranslation();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [remainingAttempts, setRemainingAttempts] = useState(null);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-
-    // 使用在线登录（邮箱+密码）
-    const result = await auth.onlineLogin(email, password);
-    if (!result.success) {
-      setError(result.error || t('auth.loginFailed'));
-      if (result.remainingAttempts !== undefined) {
-        setRemainingAttempts(result.remainingAttempts);
-      }
-    }
-    setLoading(false);
-  };
-
-  // 远程访问但未设置密码，现在改为显示在线登录
-  // 不再要求本机设置密码，直接允许使用在线账户登录
-  if (auth.requirePasswordSetup) {
-    // 继续显示登录表单，使用在线认证
-  }
-
-  return (
-    <div className="login-page">
-      <div className="login-card">
-        <h1>WhatyTerm</h1>
-        <p className="login-subtitle">AI 自动化终端管理工具</p>
-        <p style={{ fontSize: '13px', color: '#888', marginBottom: '20px' }}>
-          使用您在 term.whaty.org 注册的账户登录
-        </p>
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label>邮箱</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="your@email.com"
-              autoFocus
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label>密码</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t('auth.enterPassword')}
-              required
-            />
-          </div>
-          {error && (
-            <div className="login-error">
-              {error}
-              {remainingAttempts !== null && remainingAttempts > 0 && (
-                <span style={{ display: 'block', fontSize: '12px', marginTop: '4px' }}>
-                  剩余尝试次数: {remainingAttempts}
-                </span>
-              )}
-            </div>
-          )}
-          <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
-            {loading ? t('auth.loggingIn') : t('auth.login')}
-          </button>
-        </form>
-        <div style={{ marginTop: '16px', textAlign: 'center' }}>
-          <a
-            href="https://term.whaty.org"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: '#4a9eff', fontSize: '13px', textDecoration: 'none' }}
-          >
-            还没有账户？立即注册
-          </a>
-          <span style={{ margin: '0 8px', color: '#555' }}>|</span>
-          <a
-            href="https://term.whaty.org/forgot-password"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: '#4a9eff', fontSize: '13px', textDecoration: 'none' }}
-          >
-            忘记密码？
-          </a>
-        </div>
-      </div>
-    </div>
-  );
-}

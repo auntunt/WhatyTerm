@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import subscriptionService from '../SubscriptionService.js';
 
 // 获取当前目录
 const __filename = fileURLToPath(import.meta.url);
@@ -16,16 +15,15 @@ class PluginManager {
     this.plugins = new Map();
     this.defaultPlugin = null;
     this.initialized = false;
-    this.subscriptionService = subscriptionService;
   }
 
   /**
-   * 检查插件是否可用（基于订阅状态）
+   * 检查插件是否可用（订阅限制已移除，全部可用）
    * @param {string} pluginId - 插件 ID
    * @returns {boolean} 是否可用
    */
   isPluginAvailable(pluginId) {
-    return this.subscriptionService.isPluginAvailable(pluginId);
+    return true;
   }
 
   /**
@@ -200,7 +198,7 @@ class PluginManager {
     return Array.from(this.plugins.values()).map(p => ({
       ...p.getInfo(),
       available: this.isPluginAvailable(p.id),
-      requiresSubscription: !this.subscriptionService.isPluginAvailable(p.id) && p.id !== 'default'
+      requiresSubscription: false
     }));
   }
 
@@ -210,14 +208,6 @@ class PluginManager {
    */
   listAvailablePlugins() {
     return this.listPlugins().filter(p => p.available);
-  }
-
-  /**
-   * 获取订阅状态
-   * @returns {Object} 订阅状态信息
-   */
-  getSubscriptionStatus() {
-    return this.subscriptionService.getStatus();
   }
 
   /**

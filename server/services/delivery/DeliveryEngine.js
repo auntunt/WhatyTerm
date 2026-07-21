@@ -20,6 +20,7 @@ import os from 'os';
 import progressManager from '../ProgressManager.js';
 import { ProjectDecomposer } from './ProjectDecomposer.js';
 import { INTEGRATION_PROMPT, MACRO_REPAIR_PROMPT } from './prompts.js';
+import { detectInstallCmd, detectBuildCmd, detectTestCmd } from '../util/projectCommands.js';
 
 const MESO_MAX_RETRY = 3;   // 集成层最多重试 3 次
 const MACRO_MAX_RETRY = 2;  // 需求层最多回退修复 2 次
@@ -428,35 +429,8 @@ export class DeliveryEngine {
     this._emit(sessionId, 'delivery:state', { running: true, phase });
   }
 
-  // ── 检测构建/测试命令 ─────────────────────────────────────────────
-  _detectInstallCmd(workingDir) {
-    if (!workingDir) return 'npm install';
-    if (fs.existsSync(path.join(workingDir, 'package.json'))) return 'npm install';
-    if (fs.existsSync(path.join(workingDir, 'requirements.txt'))) return 'pip install -r requirements.txt';
-    if (fs.existsSync(path.join(workingDir, 'pyproject.toml'))) return 'pip install -e .';
-    if (fs.existsSync(path.join(workingDir, 'Cargo.toml'))) return 'cargo build';
-    return 'echo "no install needed"';
-  }
-
-  _detectBuildCmd(workingDir) {
-    if (!workingDir) return null;
-    try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(workingDir, 'package.json'), 'utf-8'));
-      if (pkg.scripts?.build) return 'npm run build';
-      if (pkg.scripts?.typecheck) return 'npm run typecheck';
-    } catch {}
-    if (fs.existsSync(path.join(workingDir, 'Cargo.toml'))) return 'cargo check';
-    return null;
-  }
-
-  _detectTestCmd(workingDir) {
-    if (!workingDir) return null;
-    try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(workingDir, 'package.json'), 'utf-8'));
-      if (pkg.scripts?.test) return 'npm test';
-    } catch {}
-    if (fs.existsSync(path.join(workingDir, 'pytest.ini')) ||
-        fs.existsSync(path.join(workingDir, 'pyproject.toml'))) return 'pytest';
-    return null;
-  }
+  // ── 检测构建/测试命令（委托共享工具模块）─────────────────────────
+  _detectInstallCmd(workingDir) { return detectInstallCmd(workingDir); }
+  _detectBuildCmd(workingDir) { return detectBuildCmd(workingDir); }
+  _detectTestCmd(workingDir) { return detectTestCmd(workingDir); }
 }

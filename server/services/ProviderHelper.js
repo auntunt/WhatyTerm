@@ -24,7 +24,6 @@ import path from 'path';
 // ── 优先级列表（模块级单例，可通过 loadProviderPriority() 刷新）──────
 export const CLAUDE_PROVIDER_PRIORITY = [
   '88codepaid',
-  'crs.whaty.org',
   'FoxCode',
 ];
 

@@ -1,10 +1,6 @@
 /**
  * DependencyManager - 管理第三方依赖的下载和安装
  *
- * 支持的依赖：
- * - frpc: FRP 内网穿透客户端
- * - cloudflared: Cloudflare Tunnel 客户端
- *
  * 支持的 CLI 工具（通过 npm 安装）：
  * - claude: Claude Code CLI (@anthropic-ai/claude-code)
  * - codex: Codex CLI (@openai/codex)
@@ -37,30 +33,8 @@ class DependencyManager {
       fs.mkdirSync(this.binDir, { recursive: true });
     }
 
-    // 二进制依赖配置（直接下载）
-    // Windows 上只使用 cloudflared（有签名，不会被 Windows Defender 阻止）
-    // 其他平台支持 frpc 和 cloudflared
-    this.dependencies = {
-      ...(this.isWindows ? {} : {
-        frpc: {
-          name: 'frpc',
-          description: 'FRP 内网穿透客户端',
-          version: '0.65.0',
-          getUrl: () => this._getFrpcUrl(),
-          getExecutable: () => this.isWindows ? 'frpc.exe' : 'frpc',
-          extract: 'tar.gz', // Windows 也是 tar.gz
-          stripComponents: 1, // 解压时去掉顶层目录
-        }
-      }),
-      cloudflared: {
-        name: 'cloudflared',
-        description: 'Cloudflare Tunnel 客户端',
-        version: '2024.1.5',
-        getUrl: () => this._getCloudflaredUrl(),
-        getExecutable: () => this.isWindows ? 'cloudflared.exe' : 'cloudflared',
-        extract: null, // 直接是可执行文件
-      }
-    };
+    // 二进制依赖配置（直接下载）；隧道功能已移除，暂无二进制依赖
+    this.dependencies = {};
 
     // CLI 工具配置（通过 npm 安装）
     this.cliTools = {
@@ -440,62 +414,6 @@ class DependencyManager {
   }
 
   /**
-   * 获取 frpc 下载 URL
-   */
-  _getFrpcUrl() {
-    const version = this.dependencies.frpc.version;
-    let platform, arch, ext;
-
-    if (this.isWindows) {
-      platform = 'windows';
-      arch = this.arch === 'arm64' ? 'arm64' : 'amd64';
-      ext = 'zip'; // Windows 使用 zip 格式
-    } else if (this.isMac) {
-      platform = 'darwin';
-      arch = this.arch === 'arm64' ? 'arm64' : 'amd64';
-      ext = 'tar.gz';
-    } else {
-      platform = 'linux';
-      arch = this.arch === 'arm64' ? 'arm64' : 'amd64';
-      ext = 'tar.gz';
-    }
-
-    return `https://github.com/fatedier/frp/releases/download/v${version}/frp_${version}_${platform}_${arch}.${ext}`;
-  }
-
-  /**
-   * 获取 cloudflared 下载 URL
-   */
-  _getCloudflaredUrl() {
-    let filename;
-
-    // 检测 Windows 上的实际架构
-    // process.arch 在 Electron 中可能返回错误的值
-    let arch = this.arch;
-    if (this.isWindows) {
-      // Windows 上使用环境变量检测
-      const procArch = process.env.PROCESSOR_ARCHITECTURE;
-      const procArch64 = process.env.PROCESSOR_ARCHITEW6432;
-      if (procArch === 'ARM64' || procArch64 === 'ARM64') {
-        arch = 'arm64';
-      } else {
-        arch = 'amd64';
-      }
-    }
-
-    if (this.isWindows) {
-      filename = arch === 'arm64' ? 'cloudflared-windows-arm64.exe' : 'cloudflared-windows-amd64.exe';
-    } else if (this.isMac) {
-      filename = this.arch === 'arm64' ? 'cloudflared-darwin-arm64.tgz' : 'cloudflared-darwin-amd64.tgz';
-    } else {
-      filename = this.arch === 'arm64' ? 'cloudflared-linux-arm64' : 'cloudflared-linux-amd64';
-    }
-
-    console.log(`[DependencyManager] cloudflared 下载配置: platform=${process.platform}, arch=${arch}, file=${filename}`);
-    return `https://github.com/cloudflare/cloudflared/releases/latest/download/${filename}`;
-  }
-
-  /**
    * 获取可执行文件路径
    */
   getExecutablePath(name) {
@@ -556,8 +474,8 @@ class DependencyManager {
     try {
       const stats = fs.statSync(execPath);
 
-      // 检查文件大小（cloudflared 和 frpc 都至少有几 MB）
-      const minSize = name === 'cloudflared' ? 10 * 1024 * 1024 : 5 * 1024 * 1024; // 10MB / 5MB
+      // 检查文件大小（二进制依赖通常至少有几 MB）
+      const minSize = 5 * 1024 * 1024; // 5MB
       if (stats.size < minSize) {
         return { valid: false, reason: `文件过小 (${(stats.size / 1024 / 1024).toFixed(2)} MB)，可能损坏` };
       }
@@ -1001,7 +919,7 @@ class DependencyManager {
           fs.chmodSync(execPath, 0o755);
         }
       } else if (url.endsWith('.tgz')) {
-        // macOS cloudflared 是 tgz
+        // tgz 压缩包
         const archivePath = path.join(this.binDir, `${name}.tgz`);
         await this._download(url, archivePath, 3, progressCallback);
         await this._extractTarGz(archivePath, this.binDir, 0);

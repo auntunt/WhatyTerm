@@ -61,28 +61,6 @@ function assertFileContains(filePath, pattern, message) {
   }
 }
 
-// ============================================
-// T2.1 在线凭据验证测试
-// ============================================
-console.log('\n=== T2.1 在线凭据验证测试 ===\n');
-
-const authServiceFile = join(projectRoot, 'server/services/AuthService.js');
-
-test('T2.1.1 验证 verifyOnlineCredentials 方法存在', () => {
-  assertFileContains(
-    authServiceFile,
-    /verifyOnlineCredentials\s*\(/,
-    'AuthService 应有 verifyOnlineCredentials 方法'
-  );
-});
-
-test('T2.1.2 验证能调用订阅服务器 API', () => {
-  assertFileContains(
-    authServiceFile,
-    /\/api\/auth\/verify-credentials/,
-    '应调用订阅服务器的 verify-credentials API'
-  );
-});
 
 // ============================================
 // T2.2 登录速率限制测试

@@ -187,54 +187,6 @@ test('T4.3.5 ProviderService switch() 切换供应商', () => {
 });
 
 // ============================================
-// T4.4 隧道 - 测试隧道服务
-// ============================================
-console.log('\n--- T4.4 隧道 ---\n');
-
-const frpTunnel = (await import('../server/services/FrpTunnel.js')).default;
-const cloudflareTunnel = (await import('../server/services/CloudflareTunnel.js')).default;
-
-test('T4.4.1 隧道服务 getUrl() 功能', () => {
-  // FRP
-  assertTrue(typeof frpTunnel.getUrl === 'function', 'FrpTunnel 应有 getUrl 方法');
-  // Cloudflare
-  assertTrue(typeof cloudflareTunnel.getUrl === 'function', 'CloudflareTunnel 应有 getUrl 方法');
-});
-
-test('T4.4.2 隧道服务 start() 功能存在', () => {
-  assertTrue(typeof frpTunnel.start === 'function' || typeof frpTunnel.connect === 'function',
-    'FrpTunnel 应有 start 或 connect 方法');
-  assertTrue(typeof cloudflareTunnel.start === 'function' || typeof cloudflareTunnel.connect === 'function',
-    'CloudflareTunnel 应有 start 或 connect 方法');
-});
-
-test('T4.4.3 隧道服务 stop() 功能存在', () => {
-  assertTrue(typeof frpTunnel.stop === 'function' || typeof frpTunnel.disconnect === 'function',
-    'FrpTunnel 应有 stop 或 disconnect 方法');
-  assertTrue(typeof cloudflareTunnel.stop === 'function' || typeof cloudflareTunnel.disconnect === 'function',
-    'CloudflareTunnel 应有 stop 或 disconnect 方法');
-});
-
-// ============================================
-// T4.5 更新 - 测试 UpdateService
-// ============================================
-console.log('\n--- T4.5 更新 ---\n');
-
-const updateService = (await import('../server/services/UpdateService.js')).default;
-
-await testAsync('T4.5.1 UpdateService checkForUpdate() 检查更新', async () => {
-  const result = await updateService.checkForUpdate(true);
-  assertNotNull(result, 'checkForUpdate 返回 null');
-  assertTrue('hasUpdate' in result, '应包含 hasUpdate 字段');
-});
-
-test('T4.5.2 UpdateService getCurrentVersion() 获取版本', () => {
-  const version = updateService.getCurrentVersion();
-  assertNotNull(version, 'version 不应为 null');
-  assertTrue(/^\d+\.\d+\.\d+/.test(version), '版本号格式不正确');
-});
-
-// ============================================
 // 测试结果汇总
 // ============================================
 console.log('\n=== 模块四测试结果汇总 ===\n');

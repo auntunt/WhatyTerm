@@ -20,11 +20,16 @@ const isLinux = process.platform === 'linux';
 
 // 配置自动更新
 function setupAutoUpdater() {
-  // 配置更新服务器
-  autoUpdater.setFeedURL({
-    provider: 'generic',
-    url: 'https://term.whaty.org/releases'
-  });
+  // 配置更新服务器（fork 请自行配置更新源；留空则禁用自动更新检查）
+  if (process.env.UPDATE_FEED_URL) {
+    autoUpdater.setFeedURL({
+      provider: 'generic',
+      url: process.env.UPDATE_FEED_URL
+    });
+  } else {
+    autoUpdater.autoDownload = false;
+    return;
+  }
 
   // 自动下载更新
   autoUpdater.autoDownload = true;
@@ -886,7 +891,6 @@ function createWindow() {
     {
       label: '帮助',
       submenu: [
-        { label: '文档', click: () => shell.openExternal('https://ai.whaty.org') },
         { label: '报告问题', click: () => shell.openExternal('https://github.com/zhangifonly/WhatyTerm/issues') }
       ]
     }
@@ -896,9 +900,38 @@ function createWindow() {
   Menu.setApplicationMenu(menu);
 }
 
-function startServer() {
-  if (isDev) {
-    writeLog('[Electron] 开发模式，跳过启动内置服务器');
+// 探测 3928 是否已有 server 在跑（返回 true 表示已就绪，可复用）
+function probeServer(timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const http = require('http');
+    const req = http.get('http://127.0.0.1:3928/api/sessions', (res) => {
+      res.resume();
+      resolve(true);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(false); });
+  });
+}
+
+// dev 模式解析系统 node（因原生模块 better-sqlite3 按 node ABI 编译，不能用 electron 的 node ABI）
+function resolveSystemNode() {
+  try {
+    const shell = process.env.SHELL || '/bin/zsh';
+    const r = require('child_process').spawnSync(shell, ['-lic', 'command -v node'], { encoding: 'utf-8', timeout: 5000 });
+    const resolved = (r.stdout || '').trim().split('\n').filter(Boolean).pop();
+    if (resolved && resolved.startsWith('/') && fs.existsSync(resolved)) return resolved;
+  } catch {}
+  // 常见回落路径
+  for (const p of ['/usr/local/bin/node', '/opt/homebrew/bin/node', '/usr/bin/node']) {
+    if (fs.existsSync(p)) return p;
+  }
+  return 'node'; // 交给 PATH
+}
+
+async function startServer() {
+  // 已有 server 在跑（如手动启动或上次残留）→ 复用，不重复起
+  if (await probeServer()) {
+    writeLog('[Electron] 检测到 3928 已有服务在运行，复用现有 server');
     return;
   }
 
@@ -910,32 +943,37 @@ function startServer() {
 
   writeLog(`[Electron] 资源目录: ${resourcesPath}`);
   writeLog(`[Electron] 服务器路径: ${serverPath}`);
-  writeLog(`[Electron] 模块路径: ${nodePath}`);
   writeLog(`[Electron] 服务器文件存在: ${fs.existsSync(serverPath)}`);
 
-  // 检查 server/package.json 是否存在
-  const serverPkgPath = path.join(resourcesPath, 'server', 'package.json');
-  writeLog(`[Electron] server/package.json 存在: ${fs.existsSync(serverPkgPath)}`);
-
-  // Windows 下需要设置 WSL 模式环境变量
+  // 公共 env
   const env = {
     ...process.env,
-    NODE_ENV: 'production',
     PORT: '3928',  // 与服务器默认端口保持一致
     NODE_PATH: nodePath,
-    ELECTRON_RUN_AS_NODE: '1',  // 让 Electron 以 Node.js 模式运行
     APP_VERSION: app.getVersion()  // 传递版本号给服务端
   };
-
   if (isWindows) {
     env.WEBTMUX_USE_WSL = 'true';
   }
 
-  writeLog('[Electron] 使用 ELECTRON_RUN_AS_NODE 模式启动服务器');
-  writeLog(`[Electron] execPath: ${process.execPath}`);
+  let exe, args;
+  if (isDev) {
+    // dev：用系统 node 直接跑源码（原生模块是 node ABI，不能走 electron）
+    exe = resolveSystemNode();
+    args = [serverPath];
+    env.NODE_ENV = 'development';
+    delete env.ELECTRON_RUN_AS_NODE;
+    writeLog(`[Electron] 开发模式，用系统 node 启动 server: ${exe}`);
+  } else {
+    // 生产：用 electron 内置 node（打包时已 rebuild 原生模块成 electron ABI）
+    exe = process.execPath;
+    args = [serverPath];
+    env.NODE_ENV = 'production';
+    env.ELECTRON_RUN_AS_NODE = '1';
+    writeLog(`[Electron] 生产模式，用 ELECTRON_RUN_AS_NODE 启动 server: ${exe}`);
+  }
 
-  // 使用 Electron 自带的 Node.js 运行服务器
-  serverProcess = spawn(process.execPath, [serverPath], {
+  serverProcess = spawn(exe, args, {
     cwd: resourcesPath,
     env,
     stdio: ['pipe', 'pipe', 'pipe']
@@ -998,77 +1036,21 @@ function stopServer() {
 // ==================== 应用生命周期 ====================
 
 // 全局错误捕获
-// ==================== 崩溃上报 ====================
-
-function reportCrash(type, message, stack, extra) {
-  try {
-    const os = require('os');
-    const crypto = require('crypto');
-    // 匿名设备ID
-    let raw = (os.cpus()[0] || {}).model || '';
-    const ifaces = os.networkInterfaces();
-    for (const name of Object.keys(ifaces)) {
-      for (const iface of ifaces[name]) {
-        if (!iface.internal && iface.mac !== '00:00:00:00:00:00') { raw += iface.mac; break; }
-      }
-    }
-    const deviceId = crypto.createHash('sha256').update(raw).digest('hex').substring(0, 32);
-    // 脱敏路径
-    const sanitize = (s) => (s || '')
-      .replace(/\/Users\/[^/]+/g, '/Users/***')
-      .replace(/C:\\Users\\[^\\]+/g, 'C:\\Users\\***')
-      .replace(/\/home\/[^/]+/g, '/home/***');
-    // 读最近日志
-    let recentLogs = '';
-    try {
-      const logDir = getLogPath();
-      const logFiles = fs.readdirSync(logDir).filter(f => f.endsWith('.log')).sort().reverse();
-      if (logFiles.length > 0) {
-        const content = fs.readFileSync(path.join(logDir, logFiles[0]), 'utf8');
-        recentLogs = sanitize(content.split('\n').slice(-50).join('\n')).substring(0, 5000);
-      }
-    } catch {}
-    const pkg = require('./package.json');
-    const payload = JSON.stringify({
-      deviceId, appVersion: pkg.version, platform: os.platform(), arch: os.arch(),
-      osVersion: os.release(), type, message: (message || '').substring(0, 500),
-      stack: sanitize(stack || '').substring(0, 3000), recentLogs,
-      extra: JSON.stringify(extra || {}).substring(0, 1000), timestamp: Date.now(),
-    });
-    const url = new URL('https://term.whaty.org/api/crash-report');
-    const mod = require('https');
-    const req = mod.request({ hostname: url.hostname, port: 443, path: url.pathname,
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: 10000 }, () => {});
-    req.on('error', () => {});
-    req.write(payload);
-    req.end();
-  } catch {}
-}
-
 process.on('uncaughtException', (error) => {
   writeLog(`[Electron] 未捕获的异常: ${error.message}`);
   writeLog(`[Electron] 堆栈: ${error.stack}`);
-  reportCrash('uncaughtException', error.message, error.stack);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   writeLog(`[Electron] 未处理的 Promise 拒绝: ${reason}`);
-  const msg = reason instanceof Error ? reason.message : String(reason);
-  const stk = reason instanceof Error ? reason.stack : '';
-  reportCrash('unhandledRejection', msg, stk);
 });
 
 app.on('render-process-gone', (event, webContents, details) => {
   writeLog(`[Electron] 渲染进程退出: ${details.reason}, exitCode: ${details.exitCode}`);
-  reportCrash('renderCrash', `reason=${details.reason}, exitCode=${details.exitCode}`, '');
 });
 
 app.on('child-process-gone', (event, details) => {
   writeLog(`[Electron] 子进程退出: ${details.type}, reason: ${details.reason}, exitCode: ${details.exitCode}`);
-  if (details.reason !== 'clean-exit') {
-    reportCrash('childProcessCrash', `type=${details.type}, reason=${details.reason}, exitCode=${details.exitCode}`, '');
-  }
 });
 
 app.whenReady().then(async () => {
@@ -1091,7 +1073,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  startServer();
+  await startServer();
   createTray();
   createWindow();
 
