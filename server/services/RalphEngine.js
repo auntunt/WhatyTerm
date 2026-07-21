@@ -438,7 +438,12 @@ class RalphEngine {
     if (progress?.patterns?.length) {
       parts.push(`# Codebase Patterns（复用经验）\n- ${progress.patterns.join('\n- ')}`);
     }
-    const ac = (task.acceptanceCriteria || []).map(c => `- ${c}`).join('\n') || '- （未指定，按需求合理判断）';
+    const acList = Array.isArray(task.acceptanceCriteria)
+      ? task.acceptanceCriteria
+      : (typeof task.acceptanceCriteria === 'string' && task.acceptanceCriteria.trim())
+        ? task.acceptanceCriteria.split('\n').map(s => s.replace(/^[-*\s]+/, '').trim()).filter(Boolean)
+        : [];
+    const ac = acList.map(c => `- ${c}`).join('\n') || '- （未指定，按需求合理判断）';
     parts.push(
       `# 当前任务 [${task.id}] ${task.name}\n` +
       `优先级: ${task.priority}  分支: ${task.branch || '(当前分支)'}\n\n` +
